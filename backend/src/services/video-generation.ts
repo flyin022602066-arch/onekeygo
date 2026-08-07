@@ -143,6 +143,8 @@ async function processVideoGeneration(id: number, config: AIConfig) {
         ? await preparePublicVideoReferenceRecord(requestRecord)
         : config.provider === 'mijing'
           ? await prepareMijingVideoReferenceRecord(requestRecord)
+          : config.provider === 'grok_openai'
+            ? await prepareGrokOpenAIVideoReferenceRecord(requestRecord)
         : {
           imageUrl: await normalizeVideoReferenceUrl(record.imageUrl),
           firstFrameUrl: await normalizeVideoReferenceUrl(record.firstFrameUrl),
@@ -610,6 +612,20 @@ export async function previewVideoPrompt(params: GenerateVideoParams) {
         lastFrameUrl: params.lastFrameUrl || null,
         referenceImageUrls: params.referenceImageUrls ? JSON.stringify(params.referenceImageUrls) : null,
       })
+      : config.provider === 'grok_openai'
+        ? await prepareGrokOpenAIVideoReferenceRecord({
+          id: 0,
+          storyboardId: params.storyboardId || null,
+          dramaId: params.dramaId || null,
+          prompt,
+          promptIsFinal: params.promptIsFinal === true,
+          model,
+          referenceMode,
+          imageUrl: params.imageUrl || null,
+          firstFrameUrl: params.firstFrameUrl || null,
+          lastFrameUrl: params.lastFrameUrl || null,
+          referenceImageUrls: params.referenceImageUrls ? JSON.stringify(params.referenceImageUrls) : null,
+        })
       : {
         prompt,
         referenceImageUrls: params.referenceImageUrls || [],
@@ -625,7 +641,7 @@ export async function previewVideoPrompt(params: GenerateVideoParams) {
       synced_asset_count: prepared.referenceImageUrls.length,
       asset_ids: [],
       reference_image_urls: prepared.referenceImageUrls,
-      reference_kind: 'public_image_url',
+      reference_kind: config.provider === 'grok_openai' ? 'public_url_or_base64' : 'public_image_url',
     }
   }
 
@@ -847,8 +863,81 @@ export async function preparePublicVideoReferenceRecord(
   }
 }
 
+/**
+ * Prepare xAI/Grok Imagine references without touching the Volcengine asset
+ * service. Local images become compressed data URLs; existing public URLs are
+ * kept as URLs so the gateway receives the smallest valid representation.
+ */
+export async function prepareGrokOpenAIVideoReferenceRecord(
+  record: VideoPromptRecord,
+  context: PublicVideoReferenceContext = getVideoAssetContext(record),
+): Promise<PreparedVideoReferenceRecord> {
+  const refs = collectVideoReferencesFromContext(record, context, 7)
+  if (!refs.length) {
+    return {
+      prompt: stripPublicVideoReferencePrompt(String(record.prompt || '')),
+      imageUrl: null,
+      firstFrameUrl: null,
+      lastFrameUrl: null,
+      referenceImageUrls: [],
+      referenceMode: 'none',
+    }
+  }
+
+  const normalized: Array<RequiredVideoReference & { publicUrl: string; provider: string }> = []
+  for (const ref of refs) {
+    if (isVolcAssetUri(ref.url)) {
+      throw new Error(`Grok Imagine 不支持火山资产 URI：${ref.name}。请使用本地图片、base64 或公网图片 URL`)
+    }
+    try {
+      const value = await normalizeVideoReferenceUrl(ref.url)
+      if (!value) throw new Error('图片内容为空')
+      normalized.push({ ...ref, publicUrl: value, provider: value.startsWith('data:') ? 'base64' : 'public-url' })
+    } catch (error) {
+      throw new Error(`Grok Imagine 参考图${ref.name}无法转换：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const referenceImageUrls = normalized.map(item => item.publicUrl)
+  const prompt = appendGrokOpenAIReferencePrompt(String(record.prompt || ''), normalized)
+  const mode = record.referenceMode === 'first_frame_multiple'
+    ? 'first_frame_multiple'
+    : referenceImageUrls.length ? (record.referenceMode === 'single' ? 'single' : 'multiple') : 'none'
+
+  return {
+    prompt,
+    imageUrl: mode === 'single' ? referenceImageUrls[0] : null,
+    firstFrameUrl: mode === 'first_frame_multiple' ? referenceImageUrls[0] : null,
+    lastFrameUrl: null,
+    referenceImageUrls: mode === 'first_frame_multiple' ? referenceImageUrls.slice(1) : mode === 'single' ? [] : referenceImageUrls,
+    referenceMode: mode,
+  }
+}
+
+function appendGrokOpenAIReferencePrompt(
+  prompt: string,
+  references: Array<RequiredVideoReference & { publicUrl: string; provider: string }>,
+) {
+  if (/Grok Imagine 只使用公网图片 URL 或 base64/.test(prompt)) {
+    return prompt
+  }
+  const basePrompt = stripPublicVideoReferencePrompt(prompt)
+  const bindings = references.map((item, index) => {
+    const label = cleanBindingLabel(item.name || item.entityName) || `参考图${index + 1}`
+    return `<IMAGE_${index + 1}> = ${label}`
+  })
+  return [
+    basePrompt,
+    'Grok Imagine reference-to-video：参考图已按顺序通过 reference_images 参数传输；请严格结合分镜正文使用，不要忽略或重新设计参考对象。',
+    '参考图对应关系：',
+    ...bindings,
+    '如果存在首帧画面，<IMAGE_1> 是本镜头必须承接的首帧；其他图片用于角色、场景、道具和构图一致性。不要调用火山资产库，不要使用 @asset://。',
+  ].filter(Boolean).join('\n')
+}
+
 function isGrokVideoModelName(model: string | null | undefined) {
-  return String(model || '').toLowerCase().includes('grok-video')
+  const normalized = String(model || '').toLowerCase()
+  return normalized.includes('grok-video') || normalized.includes('grok-imagine-video')
 }
 
 function collectVideoReferencesFromContext(
@@ -879,6 +968,23 @@ function collectVideoReferencesFromContext(
   } else if (record.referenceMode === 'first_last') {
     push(record.firstFrameUrl, `${storyboardLabel}-首帧`, 'first_frame', 'storyboard', 1)
     push(record.lastFrameUrl, `${storyboardLabel}-尾帧`, 'last_frame', 'storyboard', 2)
+  } else if (record.referenceMode === 'first_frame_multiple') {
+    push(record.firstFrameUrl, `${storyboardLabel}-首帧`, 'first_frame', 'storyboard', 1)
+    let parsed: unknown = []
+    try {
+      parsed = JSON.parse(record.referenceImageUrls || '[]')
+    } catch {
+      parsed = []
+    }
+    if (Array.isArray(parsed)) {
+      parsed.forEach((url, index) => push(
+        String(url || ''),
+        `${storyboardLabel}-参考图${index + 1}`,
+        'reference_image',
+        'storyboard',
+        index + 2,
+      ))
+    }
   } else if (record.referenceMode === 'multiple' && record.referenceImageUrls) {
     let parsed: unknown = []
     try {

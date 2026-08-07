@@ -17,6 +17,7 @@ import { EggfansVideoAdapter } from './eggfans-video'
 import { EggfansTTSAdapter } from './eggfans-tts'
 import { MijingImageAdapter } from './mijing-image'
 import { MijingVideoAdapter } from './mijing-video'
+import { GrokOpenAIVideoAdapter } from './grok-openai-video'
 import type { ImageProviderAdapter, VideoProviderAdapter, TTSProviderAdapter } from './types'
 
 // 图片 Adapter 注册表
@@ -40,6 +41,7 @@ export const videoAdapters: Record<string, VideoProviderAdapter> = {
   ali: new AliVideoAdapter(),
   eggfans: new EggfansVideoAdapter(),
   mijing: new MijingVideoAdapter(),
+  grok_openai: new GrokOpenAIVideoAdapter(),
   // Chatfire 视频 - 待确认 API 格式
 }
 

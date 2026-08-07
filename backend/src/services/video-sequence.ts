@@ -40,11 +40,11 @@ export async function startVideoSequence(input: {
   model?: string | null
 }) {
   const config = input.configId ? getConfigById(Number(input.configId)) : null
-  if (!config || config.provider !== 'mijing') {
-    throw new Error('一键串行生成仅支持谜镜视频通道，请选择谜镜视频配置')
+  if (!config || !['mijing', 'grok_openai'].includes(String(config.provider || '').toLowerCase())) {
+    throw new Error('一键串行生成仅支持谜镜或 Grok Imagine 视频通道，请选择对应的视频配置')
   }
   const model = String(input.model || config.model || '').trim()
-  if (!model) throw new Error('谜镜视频模型未配置')
+  if (!model) throw new Error('串行视频模型未配置')
 
   const storyboards = getEpisodeStoryboards(input.episodeId)
   if (!storyboards.length) throw new Error('当前集没有可生成的分镜')
@@ -237,10 +237,21 @@ async function processStep(sequence: ReturnType<typeof getVideoSequence>, step: 
   db.update(schema.videoSequenceRuns).set({ currentIndex: step.stepIndex, currentStoryboardId: step.storyboardId, updatedAt: now() }).where(eq(schema.videoSequenceRuns.id, sequence.id)).run()
 
   const previous = step.stepIndex > 0 ? sequence.steps.find(item => item.stepIndex === step.stepIndex - 1) || null : null
-  const refs = await buildStepReferences(storyboard, previous)
+  const isGrokOpenAI = String(sequence.provider || '').toLowerCase() === 'grok_openai'
+  const refs = isGrokOpenAI
+    ? await buildGrokStepReferences(storyboard, previous)
+    : await buildStepReferences(storyboard, previous)
   assertSequenceActive(sequence.id)
   const [episode] = db.select().from(schema.episodes).where(eq(schema.episodes.id, sequence.episodeId)).all()
-  const prompt = buildSequencePrompt(
+  const prompt = isGrokOpenAI
+    ? buildGrokSequencePrompt(
+      String(storyboard.videoPrompt || ''),
+      refs,
+      step.stepIndex > 0,
+      episode?.breakdownMode,
+      storyboard.dialogue,
+    )
+    : buildSequencePrompt(
     String(storyboard.videoPrompt || ''),
     refs,
     step.stepIndex > 0,
@@ -248,7 +259,9 @@ async function processStep(sequence: ReturnType<typeof getVideoSequence>, step: 
     storyboard.dialogue,
   )
   const referenceUrls = refs.map(item => item.url)
-  const referenceAssetUris = refs.map(item => formatSequenceAssetUri(item.asset))
+  const referenceAssetUris = isGrokOpenAI
+    ? refs.map(item => item.url)
+    : refs.map(item => formatSequenceAssetUri(item.asset))
   const assetIds = refs.map(item => item.asset?.providerAssetId).filter(Boolean) as string[]
   const assetBindings = refs.map(item => ({ name: item.name, role: item.role, category: item.category, asset_id: item.asset?.providerAssetId, asset_uri: item.asset?.assetUri }))
 
@@ -260,8 +273,8 @@ async function processStep(sequence: ReturnType<typeof getVideoSequence>, step: 
     referenceImageUrls: JSON.stringify(referenceAssetUris),
     firstFrameLocalPath: previous?.tailFrameLocalPath || null,
     firstFrameUrl: previous?.tailFrameUrl || null,
-    firstFrameAssetId: previous?.tailFrameAssetId || null,
-    firstFrameAssetUri: previous?.tailFrameAssetUri || null,
+    firstFrameAssetId: isGrokOpenAI ? null : previous?.tailFrameAssetId || null,
+    firstFrameAssetUri: isGrokOpenAI ? null : previous?.tailFrameAssetUri || null,
     updatedAt: now(),
   }).where(eq(schema.videoSequenceSteps.id, step.id)).run()
 
@@ -280,7 +293,7 @@ async function processStep(sequence: ReturnType<typeof getVideoSequence>, step: 
       model: sequence.model || undefined,
       referenceMode: step.stepIndex > 0 ? 'first_frame_multiple' : (referenceUrls.length ? 'multiple' : 'none'),
       firstFrameUrl: previous ? referenceAssetUris[0] : undefined,
-      referenceImageUrls: previous ? referenceAssetUris.slice(1, 9) : referenceAssetUris.slice(0, 9),
+      referenceImageUrls: previous ? referenceAssetUris.slice(1, isGrokOpenAI ? 7 : 9) : referenceAssetUris.slice(0, isGrokOpenAI ? 7 : 9),
       duration: storyboard.duration || 5,
       configId: sequence.configId || undefined,
     })
@@ -290,26 +303,29 @@ async function processStep(sequence: ReturnType<typeof getVideoSequence>, step: 
   }
   await waitForVideoGeneration(generationId, sequence.id)
   const completed = getVideoGeneration(generationId)
-  if (!completed || completed.status !== 'completed') throw new Error(completed?.errorMsg || '谜镜视频生成失败')
+  if (!completed || completed.status !== 'completed') throw new Error(completed?.errorMsg || '串行视频生成失败')
   db.update(schema.videoSequenceSteps).set({ status: 'extracting_tail', updatedAt: now() }).where(eq(schema.videoSequenceSteps.id, step.id)).run()
   const tail = await extractTailFrame(completed.localPath || completed.videoUrl || '')
-  const publicUrl = await uploadTailFrame(tail.localPath, storyboard, sequence)
-  const asset = await syncVolcImageAsset({
-    url: publicUrl,
-    name: `镜头${storyboard.storyboardNumber}-尾帧`,
-    category: 'storyboard',
-    dramaId: sequence.dramaId,
-    episodeId: sequence.episodeId,
-    storyboardId: storyboard.id,
-    storyboardNum: storyboard.storyboardNumber,
-    source: 'volc:videoSequenceTailFrame',
-  })
+  const isGrokSequence = String(sequence.provider || '').toLowerCase() === 'grok_openai'
+  const publicUrl = await uploadTailFrame(tail.localPath, storyboard, sequence, isGrokSequence)
+  const asset = isGrokSequence
+    ? null
+    : await syncVolcImageAsset({
+      url: publicUrl,
+      name: `镜头${storyboard.storyboardNumber}-尾帧`,
+      category: 'storyboard',
+      dramaId: sequence.dramaId,
+      episodeId: sequence.episodeId,
+      storyboardId: storyboard.id,
+      storyboardNum: storyboard.storyboardNumber,
+      source: 'volc:videoSequenceTailFrame',
+    })
   db.update(schema.videoSequenceSteps).set({
     status: 'completed',
     tailFrameLocalPath: tail.localPath,
     tailFrameUrl: publicUrl,
-    tailFrameAssetId: asset.providerAssetId,
-    tailFrameAssetUri: asset.assetUri || asset.providerAssetId,
+    tailFrameAssetId: asset?.providerAssetId || null,
+    tailFrameAssetUri: asset?.assetUri || asset?.providerAssetId || null,
     completedAt: now(),
     updatedAt: now(),
   }).where(eq(schema.videoSequenceSteps.id, step.id)).run()
@@ -405,6 +421,39 @@ async function buildStepReferences(storyboard: Storyboard, previous: Step | null
   return refs
 }
 
+async function buildGrokStepReferences(storyboard: Storyboard, previous: Step | null): Promise<AssetRef[]> {
+  const refs: AssetRef[] = []
+  const seen = new Set<string>()
+  const push = (url: string | null | undefined, name: string, role: string, category: string, entityName?: string) => {
+    const value = String(url || '').trim()
+    if (!value || seen.has(value)) return
+    seen.add(value)
+    refs.push({ url: value, name, role, category, entityName })
+  }
+
+  if (previous) {
+    if (!previous.tailFrameUrl) throw new Error(`上一镜头尾帧未准备完成，无法生成镜头${storyboard.storyboardNumber}`)
+    push(previous.tailFrameUrl, '首帧画面', 'first_frame', 'storyboard')
+  }
+
+  const context = getStoryboardContext(storyboard)
+  const missingCharacters = context.characters.filter(character => !getEntityImageUrl(character))
+  if (missingCharacters.length) throw new Error(`镜头${storyboard.storyboardNumber}角色缺少形象图：${missingCharacters.map(item => item.name).join('、')}`)
+  if (context.scene && !getEntityImageUrl(context.scene)) throw new Error(`镜头${storyboard.storyboardNumber}场景“${context.scene.location}”缺少场景图`)
+  const missingProps = context.props.filter(prop => !getEntityImageUrl(prop))
+  if (missingProps.length) throw new Error(`镜头${storyboard.storyboardNumber}道具缺少图片：${missingProps.map(item => item.name).join('、')}`)
+
+  context.characters.forEach(character => push(getEntityImageUrl(character), `角色-${character.name}`, 'character', 'character', character.name))
+  if (context.scene) push(getEntityImageUrl(context.scene), `场景-${context.scene.location}`, 'scene', 'scene', context.scene.location)
+  context.props.forEach(prop => push(getEntityImageUrl(prop), `道具-${prop.name}`, 'prop', 'prop', prop.name))
+  parseReferenceImages(storyboard.referenceImages).forEach((url, index) => push(url, `镜头${storyboard.storyboardNumber}-参考图${index + 1}`, 'reference_image', 'storyboard'))
+
+  if (refs.length > 7) {
+    throw new Error(`镜头${storyboard.storyboardNumber}需要 ${refs.length} 张 Grok Imagine 参考图，超过最多 7 张限制；请减少角色、道具或镜头参考图`)
+  }
+  return refs
+}
+
 export function buildSequencePrompt(
   original: string,
   refs: AssetRef[],
@@ -422,6 +471,44 @@ export function buildSequencePrompt(
     breakdownMode,
     '谜镜串行视频生成',
   )
+}
+
+export function buildGrokSequencePrompt(
+  original: string,
+  refs: AssetRef[],
+  hasFirstFrame: boolean,
+  breakdownMode?: string | null,
+  dialogue?: string | null,
+) {
+  const cleanOriginal = stripGrokSequencePrompt(stripSequencePrompt(String(original || '').trim()))
+  const rules = hasFirstFrame
+    ? '这是串行生成的后续镜头；第一张参考图是上一镜头尾帧，必须作为本镜头第一帧严格承接，再按原分镜文本完成动作和镜头运动。'
+    : '这是串行生成的第一个镜头；按原分镜文本开始生成，不要添加未提供的角色、场景或道具。'
+  const bindings = refs.map((item, index) => `<IMAGE_${index + 1}>：${grokBindingLabel(item)}`)
+  const prompt = [
+    rules,
+    'Grok Imagine 只使用公网图片 URL 或 base64 参考图，不使用火山 Asset URI；图片已经通过 reference_images 参数按以下顺序传输。',
+    `参考图传输顺序（共 ${refs.length} 张，最多 7 张）：`,
+    ...bindings,
+    '必须按照上述映射使用对应参考图：首帧图负责连续性，角色图负责人物一致性，场景图负责环境一致性，道具图负责物件一致性；不要重新设计参考对象。',
+    cleanOriginal,
+  ].filter(Boolean).join('\n')
+  return withTkOverseasVisualLock(
+    appendVideoDialoguePrompt(prompt, dialogue, breakdownMode),
+    breakdownMode,
+    'Grok Imagine 串行视频生成',
+  )
+}
+
+function stripGrokSequencePrompt(value: string) {
+  const lines = value.split(/\r?\n/)
+  const marker = lines.findIndex(line => /Grok Imagine 只使用公网|Grok Imagine reference-to-video|参考图传输顺序（共|参考图对应关系：/.test(line))
+  return (marker >= 0 ? lines.slice(0, marker) : lines).join('\n').trim()
+}
+
+function grokBindingLabel(item: AssetRef) {
+  if (item.role === 'first_frame') return '上一镜尾帧，本镜头首帧'
+  return String(item.entityName || item.name || '参考资产').replace(/^角色-|^场景-|^道具-/, '').trim()
 }
 
 function stripSequencePrompt(value: string) {
@@ -552,10 +639,31 @@ async function extractTailFrame(videoPathOrUrl: string) {
   return { localPath: `static/${relative.replace(/^static\//, '')}` }
 }
 
-async function uploadTailFrame(localPath: string, storyboard: Storyboard, sequence: Run) {
+async function uploadTailFrame(localPath: string, storyboard: Storyboard, sequence: Run, grokOpenAI = false) {
   const { ensurePublicImageUrl } = await import('./volc-asset-sync.js')
-  const result = await ensurePublicImageUrl(localPath, `镜头${storyboard.storyboardNumber}-尾帧`)
-  return result.url
+  try {
+    const result = await ensurePublicImageUrl(
+      localPath,
+      `镜头${storyboard.storyboardNumber}-尾帧`,
+      undefined,
+      undefined,
+      grokOpenAI ? {
+        preferUguu: true,
+        validateResult: true,
+        allowedProviders: ['uguu-upload', 'eggfans-image-host'],
+      } : undefined,
+    )
+    return result.url
+  } catch (error) {
+    if (!grokOpenAI) throw error
+    // Grok accepts local images after the normalizer converts them to base64.
+    // Keep serial generation usable when both public upload fallbacks are down.
+    logTaskWarn('VideoSequence', 'grok-tail-public-upload-fallback-to-base64', {
+      storyboardId: storyboard.id,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return localPath
+  }
 }
 
 function getVideoGeneration(id: number) {

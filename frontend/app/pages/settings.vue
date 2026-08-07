@@ -402,6 +402,7 @@
           <input v-else v-model="cfgForm.modelStr" class="input" placeholder="model-name" />
           <span v-if="cfgForm.provider === 'eggfans'" class="field-hint">模型来自 eggfans.com/api/pricing_new，并按当前服务类型过滤。</span>
           <span v-if="cfgForm.provider === 'mijing'" class="field-hint">模型来自谜镜 /v1/aimodels，并按当前服务类型过滤。</span>
+          <span v-if="cfgForm.provider === 'grok_openai'" class="field-hint">OpenAI 兼容视频通道，默认使用 grok-imagine-video；参考图走公网 URL 或 base64，不上传火山素材库。</span>
         </label>
         <div v-if="cfgForm.provider === 'eggfans' && cfgEggfansMeta" class="eggfans-model-meta">
           <div>
@@ -444,6 +445,9 @@
         </div>
         <div v-if="cfgForm.provider === 'mijing' && cfgForm.service_type === 'video'" class="provider-note">
           谜镜 seedance2.0创作版走谜镜网关顶层字段：reference_image_urls、duration、ratio、watermark=false、generate_audio=true、resolution=720p；官方火山 Seedance 2.0 配置仍使用 volcengine。
+        </div>
+        <div v-if="cfgForm.provider === 'grok_openai' && cfgForm.service_type === 'video'" class="provider-note">
+          Grok Imagine 使用 OpenAI 兼容视频端点：/v1/videos/generations 创建、/v1/videos/{id} 查询；请求字段为 model、prompt、image/reference_images、duration、aspect_ratio、resolution，不使用火山资产 URI。
         </div>
         <div v-if="cfgTestResult" class="test-result" :class="{ ok: cfgTestResult.reachable, bad: !cfgTestResult.reachable }">
           <div class="test-result-head">
@@ -607,8 +611,21 @@ const presetForm = reactive({
   },
 })
 const serviceTypes = [{ type: 'text', label: '文本' }, { type: 'image', label: '图片' }, { type: 'video', label: '视频' }, { type: 'audio', label: '音频' }]
-const providers = ['ali', 'chatfire', 'eggfans', 'gemini', 'mijing', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine']
-const providerSelectOptions = computed(() => providers.map(p => ({ label: p, value: p })))
+const providers = ['ali', 'chatfire', 'eggfans', 'gemini', 'grok_openai', 'mijing', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine']
+const providerLabels = {
+  ali: '阿里百炼',
+  chatfire: 'ChatFire',
+  eggfans: 'Eggfans 聚合站',
+  gemini: 'Gemini',
+  grok_openai: 'Grok Imagine · OpenAI 兼容',
+  mijing: '谜镜',
+  minimax: 'MiniMax',
+  openai: 'OpenAI',
+  openrouter: 'OpenRouter',
+  vidu: 'Vidu',
+  volcengine: '火山方舟官方',
+}
+const providerSelectOptions = computed(() => providers.map(p => ({ label: providerLabels[p] || p, value: p })))
 const serviceMeta = {
   text: { label: '文本', desc: '剧本改写、角色场景提取、分镜拆解等 Agent 文本能力' },
   image: { label: '图片', desc: '角色图、场景图、镜头图与首尾帧等静态图像生成' },
@@ -634,6 +651,18 @@ const providerPresets = {
   video: {
     volcengine: { label: 'Seedance 2.0 官方', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedance-2-0-260128'] },
     mijing: { label: '谜镜视频', baseUrl: 'https://api.magine.work', models: ['seedance2.0创作版'] },
+    grok_openai: {
+      label: 'Grok Imagine OpenAI',
+      baseUrl: 'https://api.aigcly.top',
+      models: ['grok-imagine-video'],
+      endpoint: '/v1/videos/generations',
+      query_endpoint: '/v1/videos/{id}',
+      settings: {
+        grokOpenai: {
+          defaults: { resolution: '720p' },
+        },
+      },
+    },
     eggfans: { label: 'Eggfans 视频', baseUrl: 'https://api.eggfans.com', models: ['grok-video-3-10s'] },
     vidu: { label: 'Vidu 推荐', baseUrl: 'https://api.vidu.com', models: ['viduq3-turbo'] },
     ali: { label: '阿里推荐', baseUrl: 'https://dashscope.aliyuncs.com', models: ['wan2.6-i2v-flash'] },
@@ -672,12 +701,14 @@ const eggfansPresetCards = computed(() => [
     ...preset,
     model: presetForm.models[preset.serviceType] || presetDefaults[preset.serviceType],
   })),
+  { serviceType: 'video', label: 'Grok Imagine OpenAI', provider: 'grok_openai', baseUrl: 'https://api.aigcly.top', model: 'grok-imagine-video', priority: 96 },
   { serviceType: 'seedance', label: 'Seedance 2.0 官方', provider: 'volcengine', baseUrl: 'https://ark.cn-beijing.volces.com', model: 'doubao-seedance-2-0-260128', priority: presetPriority('video', 'volcengine') },
 ])
 const endpointPrefixes = {
   chatfire: '/v1',
   eggfans: '/v1',
   mijing: '/v1',
+  grok_openai: '/v1',
   openai: '/v1',
   openrouter: '/v1',
   minimax: '/v1',
@@ -694,7 +725,7 @@ const eggfansImageHostConfig = computed(() => cfgs.value.find(c => c.service_typ
 const endpointHint = computed(() => {
   const provider = cfgForm.provider
   const base = cfgForm.base_url || 'https://...'
-  if ((provider === 'eggfans' || provider === 'mijing') && cfgForm.endpoint) return `${base.replace(/\/+$/, '')}${cfgForm.endpoint}`
+  if ((provider === 'eggfans' || provider === 'mijing' || provider === 'grok_openai') && cfgForm.endpoint) return `${base.replace(/\/+$/, '')}${cfgForm.endpoint}`
   const prefix = endpointPrefixes[provider] || ''
   if (!provider) return '选择服务商后显示推荐端点前缀'
   return `${base}${prefix}`
@@ -803,6 +834,19 @@ function clearProviderMetadata() {
   cfgForm.settings = null
 }
 
+function applyGrokOpenAIModel(value) {
+  cfgForm.modelStr = value || ''
+  if (cfgForm.provider !== 'grok_openai') {
+    clearProviderMetadata()
+    return
+  }
+  cfgForm.endpoint = cfgForm.endpoint || '/v1/videos/generations'
+  cfgForm.query_endpoint = cfgForm.query_endpoint || '/v1/videos/{id}'
+  cfgForm.settings = cfgForm.settings?.grokOpenai
+    ? cfgForm.settings
+    : { grokOpenai: { defaults: { resolution: '720p' } } }
+}
+
 function applyEggfansModel(value) {
   cfgForm.modelStr = value || ''
   if (cfgForm.provider !== 'eggfans') {
@@ -899,11 +943,17 @@ function applyProviderPreset(type, provider) {
   clearProviderMetadata()
   if (provider === 'eggfans') applyEggfansModelAfterLoad(type, preset.models[0])
   if (provider === 'mijing') applyMijingModelAfterLoad(type, preset.models[0])
+  if (provider === 'grok_openai') {
+    cfgForm.endpoint = preset.endpoint || '/v1/videos/generations'
+    cfgForm.query_endpoint = preset.query_endpoint || '/v1/videos/{id}'
+    cfgForm.settings = preset.settings || { grokOpenai: { defaults: { resolution: '720p' } } }
+  }
 }
 function onProviderChanged(provider) {
   clearProviderMetadata()
   if (provider === 'eggfans') applyEggfansModelAfterLoad(cfgForm.service_type, cfgForm.modelStr)
   if (provider === 'mijing') applyMijingModelAfterLoad(cfgForm.service_type, cfgForm.modelStr)
+  if (provider === 'grok_openai') applyGrokOpenAIModel(cfgForm.modelStr || 'grok-imagine-video')
 }
 
 function openPresetDialog() {
@@ -1106,6 +1156,9 @@ function startEditCfg(c) {
     loadMijingModels(c.service_type).then(() => {
       if (!cfgForm.settings?.mijing) applyMijingModel(cfgForm.modelStr)
     })
+  }
+  if (c.provider === 'grok_openai' && c.service_type === 'video') {
+    applyGrokOpenAIModel(cfgForm.modelStr)
   }
   cfgDialog.value = true
 }

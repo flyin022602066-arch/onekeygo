@@ -329,7 +329,7 @@ export function buildProbe(
     }
   }
 
-  if (p === 'openai' || p === 'openrouter' || p === 'chatfire' || p === 'eggfans') {
+  if (p === 'openai' || p === 'openrouter' || p === 'chatfire' || p === 'eggfans' || p === 'grok_openai') {
     return {
       method: 'GET',
       url: joinProviderUrl(baseUrl, '/v1', '/models'),

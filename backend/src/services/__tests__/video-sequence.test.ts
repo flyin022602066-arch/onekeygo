@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildSequencePrompt } from '../video-sequence.js'
+import { buildGrokSequencePrompt, buildSequencePrompt } from '../video-sequence.js'
 
 function asset(id: string) {
   return {
@@ -61,4 +61,26 @@ test('buildSequencePrompt carries the current storyboard dialogue into the seria
   assert.match(prompt, /Eli: "Where did you get that necklace\?"/)
   assert.match(prompt, /对白语言：English/)
   assert.doesNotMatch(prompt, /你从哪里得到那条项链/)
+})
+
+test('buildGrokSequencePrompt declares public references in order without Volc asset syntax', () => {
+  const prompt = buildGrokSequencePrompt(
+    '<role>Ava</role> walks through <location>the studio</location>.',
+    [
+      { url: 'https://cdn.example/tail.png', name: '首帧画面', role: 'first_frame', category: 'storyboard' },
+      { url: 'https://cdn.example/ava.png', name: '角色-Ava', role: 'character', category: 'character', entityName: 'Ava' },
+      { url: 'https://cdn.example/studio.png', name: '场景-studio', role: 'scene', category: 'scene', entityName: 'studio' },
+    ],
+    true,
+    'tk_overseas',
+    'Ava: "We should leave now."（我们现在应该离开。）',
+  )
+
+  assert.match(prompt, /<IMAGE_1>：上一镜尾帧，本镜头首帧/)
+  assert.match(prompt, /<IMAGE_2>：Ava/)
+  assert.match(prompt, /<IMAGE_3>：studio/)
+  assert.match(prompt, /Grok Imagine 只使用公网图片 URL 或 base64/)
+  assert.match(prompt, /Ava: "We should leave now\."/)
+  assert.doesNotMatch(prompt, /@asset:\/\//)
+  assert.doesNotMatch(prompt, /我们现在应该离开/)
 })

@@ -1431,7 +1431,7 @@
                   上传全部参考图
                 </button>
                 <button
-                  v-if="usesMijingVideo"
+                  v-if="usesSequentialVideo"
                   class="btn btn-sm btn-primary"
                   :disabled="!sbs.length || sequenceBusy"
                   @click="startSequentialGeneration"
@@ -1448,8 +1448,8 @@
             <div v-if="videoSequence" class="video-sequence-panel">
               <div class="video-sequence-head">
                 <div>
-                  <strong>谜镜串行生成</strong>
-                  <span class="dim">镜头 {{ sequenceCompletedCount }}/{{ videoSequence.total_count || videoSequence.totalCount || sbs.length }} · 资产上限 9</span>
+                  <strong>{{ sequenceProviderLabel }}串行生成</strong>
+                  <span class="dim">镜头 {{ sequenceCompletedCount }}/{{ videoSequence.total_count || videoSequence.totalCount || sbs.length }} · {{ sequenceReferenceLimitLabel }}</span>
                 </div>
                 <div class="video-sequence-actions">
                   <span :class="['tag', sequenceStatusClass(videoSequence.status)]">{{ sequenceStatusLabel(videoSequence.status) }}</span>
@@ -1463,7 +1463,7 @@
                 <span v-if="videoSequence.error_msg || videoSequence.errorMsg" class="sequence-error">{{ videoSequence.error_msg || videoSequence.errorMsg }}</span>
               </div>
               <div v-if="sequenceCurrentStep" class="video-sequence-step-detail">
-                当前镜头资产 {{ sequenceAssetCount(sequenceCurrentStep) }}/9
+                当前镜头参考 {{ sequenceAssetCount(sequenceCurrentStep) }}/{{ sequenceAssetLimit }}
                 <span v-if="sequenceCurrentStep.first_frame_asset_id || sequenceCurrentStep.firstFrameAssetId"> · 首帧资产 {{ sequenceCurrentStep.first_frame_asset_id || sequenceCurrentStep.firstFrameAssetId }}</span>
                 <span v-if="sequenceCurrentStep.video_generation_id || sequenceCurrentStep.videoGenerationId"> · 视频任务 #{{ sequenceCurrentStep.video_generation_id || sequenceCurrentStep.videoGenerationId }}</span>
               </div>
@@ -2316,7 +2316,10 @@ const storyboardAgentRuntimeLabel = computed(() => {
   if (model) return `文本 Agent · ${model}`
   return '后端文本 Agent'
 })
-const usesGrokPublicVideoReferences = computed(() => isGrokVideoModelName(effectiveVideoModel.value))
+const usesGrokPublicVideoReferences = computed(() =>
+  String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'grok_openai'
+  || isGrokVideoModelName(effectiveVideoModel.value),
+)
 const storyboardBreakdownMode = ref('standard')
 const storyboardBreakdownModeOptions = [
   { label: '普通紧凑', value: 'standard' },
@@ -2360,7 +2363,10 @@ const usesVolcAssetVideoReferences = computed(() => {
   const provider = String(effectiveVideoConfig.value?.provider || '').toLowerCase()
   return provider === 'volcengine' && !usesGrokPublicVideoReferences.value
 })
-const usesMijingVideo = computed(() => String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'mijing')
+const usesSequentialVideo = computed(() => ['mijing', 'grok_openai'].includes(String(effectiveVideoConfig.value?.provider || '').toLowerCase()))
+const sequenceProviderLabel = computed(() => String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'grok_openai' ? 'Grok Imagine ' : '谜镜 ')
+const sequenceReferenceLimitLabel = computed(() => String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'grok_openai' ? '公网/base64参考上限 7 张' : '火山资产上限 9')
+const sequenceAssetLimit = computed(() => String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'grok_openai' ? 7 : 9)
 const sequenceBusy = computed(() => ['queued', 'running', 'paused'].includes(String(videoSequence.value?.status || '').toLowerCase()))
 const sequenceCompletedCount = computed(() => Array.isArray(videoSequence.value?.steps) ? videoSequence.value.steps.filter(step => step.status === 'completed').length : 0)
 const sequenceProgress = computed(() => {
@@ -3680,7 +3686,7 @@ function syncVideoSequencePolling() {
 }
 
 async function startSequentialGeneration() {
-  if (!usesMijingVideo.value || sequenceBusy.value) return
+  if (!usesSequentialVideo.value || sequenceBusy.value) return
   try {
     videoSequence.value = await videoAPI.startSequential({
       drama_id: dramaId,
@@ -3689,7 +3695,7 @@ async function startSequentialGeneration() {
       model: effectiveVideoModel.value || undefined,
     })
     syncVideoSequencePolling()
-    toast.success('已启动谜镜串行生成，将按镜头顺序自动衔接')
+    toast.success(`已启动${sequenceProviderLabel.value}串行生成，将按镜头顺序自动衔接`)
   } catch (e) {
     toast.error(e.message)
   }
@@ -3722,11 +3728,16 @@ function sequenceStatusDetail(sequence) {
   const step = sequenceCurrentStep.value
   if (!step) return sequence.status === 'completed' ? '全部镜头已按尾帧衔接完成。' : '等待任务处理。'
   const number = step.storyboard_number || step.storyboardNumber || Number(step.step_index ?? step.stepIndex ?? 0) + 1
-  const phase = ({ preparing: '正在准备参考资产', submitting: '正在提交视频任务', processing: '正在等待视频结果', extracting_tail: '正在提取尾帧并上传火山资产' })[step.status] || '等待处理'
+  const phase = ({ preparing: '正在准备参考资产', submitting: '正在提交视频任务', processing: '正在等待视频结果', extracting_tail: sequenceProviderLabel.value === 'Grok Imagine ' ? '正在提取尾帧并上传公网图床' : '正在提取尾帧并上传火山资产' })[step.status] || '等待处理'
   return `镜头 ${number}：${phase}`
 }
 function sequenceAssetCount(step) {
-  try { return JSON.parse(step?.asset_ids || step?.assetIds || '[]').length } catch { return 0 }
+  try {
+    const assetIds = JSON.parse(step?.asset_ids || step?.assetIds || '[]')
+    if (Array.isArray(assetIds) && assetIds.length) return assetIds.length
+    const refs = JSON.parse(step?.asset_refs || step?.assetRefs || '[]')
+    return Array.isArray(refs) ? refs.length : 0
+  } catch { return 0 }
 }
 function sequenceAssetLabel(item) {
   const labels = { first_frame: '首帧', character: '角色', scene: '场景', prop: '道具', reference_image: '参考图' }
@@ -4371,7 +4382,8 @@ function getVideoReferenceUrls(sb) {
 }
 
 function isGrokVideoModelName(model) {
-  return String(model || '').toLowerCase().includes('grok-video')
+  const normalized = String(model || '').toLowerCase()
+  return normalized.includes('grok-video') || normalized.includes('grok-imagine-video')
 }
 
 function getGrokVideoReferenceItems(sb) {

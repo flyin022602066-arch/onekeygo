@@ -16,6 +16,13 @@ test('buildProbe uses Eggfans OpenAI model list endpoint', () => {
   assert.equal(probe.headers.Authorization, 'Bearer key')
 })
 
+test('buildProbe uses the OpenAI-compatible model list endpoint for Grok Imagine', () => {
+  const probe = buildProbe('video', 'grok_openai', 'https://api.aigcly.top', 'grok-imagine-video', 'key')
+  assert.equal(probe.method, 'GET')
+  assert.equal(probe.url, 'https://api.aigcly.top/v1/models')
+  assert.equal(probe.headers.Authorization, 'Bearer key')
+})
+
 test('buildProbe avoids paid Eggfans media generation probes', () => {
   const probe = buildProbe('video', 'eggfans', 'https://api.eggfans.com', 'veo3.1', 'key', '/v1/video/create')
   assert.equal(probe.method, 'GET')
