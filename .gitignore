@@ -1,0 +1,55 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (database and uploaded files)
+data/drama_generator.db
+data/drama_generator.db-wal
+data/drama_generator.db-shm
+data/huobao_drama.db
+data/huobao_drama.db-wal
+data/huobao_drama.db-shm
+data/eggfans_drama.db
+data/eggfans_drama.db-wal
+data/eggfans_drama.db-shm
+data/*.db
+data/*.db-*
+data/*.db.*
+data/*.backup*
+data/public.sql
+data/*.bak*
+data/static/
+data/storage/
+
+# Browser/debug artifacts
+.playwright-cli/
+
+# Config
+configs/config.yaml
+
+# Misc
+tmp/
+temp/
+.superpowers/
+/CLAUDE.md
+/AGENTS.md
