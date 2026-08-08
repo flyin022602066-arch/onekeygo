@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+desktop/runtime/
+desktop/release/
 
 # IDE
 .idea/

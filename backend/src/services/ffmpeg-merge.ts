@@ -17,6 +17,7 @@ import {
   groupVideoGenerationsByStoryboard,
   type VideoGenerationCandidate,
 } from './storyboard-video-source.js'
+import { FFMPEG_BINARY, FFPROBE_BINARY } from './media-tools.js'
 
 const STORAGE_ROOT = appConfig.storage.localPath
 const DATA_ROOT = path.dirname(STORAGE_ROOT)
@@ -220,7 +221,7 @@ async function normalizeMergeInput(inputPath: string, tempDir: string): Promise<
     ? buildNormalizeAudioTrackArgs(inputPath, outputPath)
     : buildSilentAudioTrackArgs(inputPath, outputPath)
 
-  await execFile('ffmpeg', args)
+  await execFile(FFMPEG_BINARY, args)
   return outputPath
 }
 
@@ -247,7 +248,7 @@ type PreparedMergeInputs = {
 }
 
 async function probeFrameInfo(filePath: string): Promise<{ frameCount: number; frameRate: number }> {
-  const { stdout } = await execFile('ffprobe', [
+  const { stdout } = await execFile(FFPROBE_BINARY, [
     '-hide_banner',
     '-v', 'error',
     '-select_streams', 'v:0',
@@ -290,7 +291,7 @@ async function prepareMergeInputs(
       const frameInfo = await probeFrameInfo(inputPath)
       const outputPath = path.join(tempDir, `${uuid()}-trimmed.mp4`)
       temporaryPaths.push(outputPath)
-      await execFile('ffmpeg', buildTrimLastFrameArgs(inputPath, outputPath, frameInfo.frameCount, frameInfo.frameRate))
+      await execFile(FFMPEG_BINARY, buildTrimLastFrameArgs(inputPath, outputPath, frameInfo.frameCount, frameInfo.frameRate))
       paths.push(outputPath)
     }
     return { paths, temporaryPaths }

@@ -44,6 +44,7 @@ test('loadConfig lets environment variables override yaml defaults', () => {
       HOST: '127.0.0.1',
       DB_PATH: './tmp/test.db',
       STORAGE_PATH: './tmp/static',
+      STORAGE_BASE_URL: 'http://127.0.0.1:9876/static',
       CORS_ORIGINS: 'http://localhost:1,http://localhost:2',
     },
   })
@@ -53,4 +54,5 @@ test('loadConfig lets environment variables override yaml defaults', () => {
   assert.deepEqual(config.server.corsOrigins, ['http://localhost:1', 'http://localhost:2'])
   assert.equal(config.database.path, path.join(root, 'tmp/test.db'))
   assert.equal(config.storage.localPath, path.join(root, 'tmp/static'))
+  assert.equal(config.storage.baseUrl, 'http://127.0.0.1:9876/static')
 })

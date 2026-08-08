@@ -1,0 +1,12 @@
+{
+  "name": "onekeygo",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "setup": "npm ci --prefix backend && npm ci --prefix frontend && npm ci --prefix desktop",
+    "check": "npm run typecheck --prefix backend && npm test --prefix backend && npm run build --prefix frontend && npm test --prefix desktop",
+    "desktop:dev": "npm run dev --prefix desktop",
+    "desktop:pack": "npm run pack --prefix desktop",
+    "desktop:dist": "npm run dist:win --prefix desktop"
+  }
+}

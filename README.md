@@ -1,5 +1,7 @@
 # 🎬 Eggfans Drama - AI 短剧生成平台
 
+> Windows 桌面版：内置本地后端与 FFmpeg，构建和使用说明见 [docs/WINDOWS_DESKTOP.md](docs/WINDOWS_DESKTOP.md)。
+
 <div align="center">
 
 **基于 TypeScript 全栈的 AI 短剧自动化生产平台**

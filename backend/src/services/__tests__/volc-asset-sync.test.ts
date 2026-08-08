@@ -523,7 +523,7 @@ test('uploadPublicImageFile reuses active Eggfans platform key for image host fa
       { method: 'POST', url: 'https://imageproxy.zhongzhuan.chat/api/upload', hasAuth: true },
       { method: 'HEAD', url: 'https://cdn.eggfans.com/fallback.png', hasAuth: false },
     ])
-    assert.notDeepEqual(calls, [
+    assert.deepEqual(calls, [
       { method: 'POST', url: 'https://uguu.se/upload', auth: '' },
       { method: 'POST', url: 'https://imageproxy.zhongzhuan.chat/api/upload', auth: 'Bearer eggfans-platform-key' },
       { method: 'HEAD', url: 'https://cdn.eggfans.com/fallback.png', auth: '' },

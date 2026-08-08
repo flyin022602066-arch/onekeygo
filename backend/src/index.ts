@@ -32,8 +32,10 @@ import { notFound } from './utils/response.js'
 import { resumePendingVideoPolls } from './services/video-generation.js'
 import { resumeVideoSequences } from './services/video-sequence.js'
 import { resumePendingImagePolls } from './services/image-generation.js'
+import { configureMediaTools } from './services/media-tools.js'
 
 const projectRoot = appConfig.projectRoot
+configureMediaTools()
 fs.mkdirSync(appConfig.storage.localPath, { recursive: true })
 
 const app = new Hono()

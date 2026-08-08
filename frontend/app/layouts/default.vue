@@ -5,12 +5,12 @@
       <div class="header-left">
         <button class="brand" @click="navigateTo('/')">
           <div class="brand-mark">
-            <img v-if="showBrandImage" :src="brandLogo" alt="Eggfans" class="brand-logo" @error="showBrandImage = false" />
-            <span v-else class="brand-fallback">E</span>
+            <img v-if="showBrandImage" :src="brandLogo" alt="谜镜" class="brand-logo" @error="showBrandImage = false" />
+            <span v-else class="brand-fallback">谜</span>
           </div>
           <div class="brand-text">
-            <span class="brand-name">Eggfans</span>
-            <span class="brand-sub">Eggfans Studio</span>
+            <span class="brand-name">谜镜</span>
+            <span class="brand-sub">谜镜 Studio</span>
           </div>
         </button>
       </div>
@@ -47,7 +47,7 @@
 
 <script setup>
 import { Images, LayoutGrid, Settings } from 'lucide-vue-next'
-import brandLogo from '~/assets/eggfans-logo.png'
+import brandLogo from '~/assets/mijing-logo.png'
 
 const route = useRoute()
 const showBrandImage = ref(true)
@@ -87,8 +87,8 @@ const showBrandImage = ref(true)
   overflow: hidden;
 }
 .brand-logo {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 24px;
   object-fit: contain;
   display: block;
 }

@@ -13,6 +13,7 @@ import type { SyncedVolcAsset } from './volc-asset-sync.js'
 import { logTaskError, logTaskProgress, logTaskWarn } from '../utils/task-logger.js'
 import { withTkOverseasVisualLock } from './overseas-visual.js'
 import { appendVideoDialoguePrompt } from './video-dialogue-prompt.js'
+import { FFMPEG_BINARY } from './media-tools.js'
 
 const execFileAsync = promisify(execFile)
 const MAX_ASSETS = 9
@@ -634,7 +635,7 @@ async function extractTailFrame(videoPathOrUrl: string) {
   const outputDir = path.dirname(absoluteVideo).replace(`${path.sep}videos`, `${path.sep}sequence-frames`)
   fs.mkdirSync(outputDir, { recursive: true })
   const output = path.join(outputDir, `tail-${Date.now()}-${Math.random().toString(16).slice(2)}.png`)
-  await execFileAsync('ffmpeg', ['-y', '-sseof', '-1', '-i', absoluteVideo, '-vf', 'reverse', '-frames:v', '1', '-update', '1', output], { timeout: 90_000 })
+  await execFileAsync(FFMPEG_BINARY, ['-y', '-sseof', '-1', '-i', absoluteVideo, '-vf', 'reverse', '-frames:v', '1', '-update', '1', output], { timeout: 90_000 })
   const relative = path.relative(path.dirname(getAbsolutePath('static/')), output).split(path.sep).join('/')
   return { localPath: `static/${relative.replace(/^static\//, '')}` }
 }

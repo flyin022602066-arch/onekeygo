@@ -15,6 +15,7 @@ import { buildDialogueTTSSegments, parseDialogueForTTS } from './dialogue-tts.js
 import { ensureVideoLocalCopy } from './video-generation.js'
 import { getStoryboardVideoSource } from './storyboard-video-source.js'
 import { logTaskError, logTaskProgress, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
+import { FFMPEG_BINARY } from './media-tools.js'
 
 const STORAGE_ROOT = appConfig.storage.localPath
 const DATA_ROOT = path.dirname(STORAGE_ROOT)
@@ -110,7 +111,7 @@ async function resolveStoryboardVideoPath(storyboardId: number, videoUrl: string
 function supportsSubtitleFilter(): boolean {
   if (subtitleFilterSupport != null) return subtitleFilterSupport
   try {
-    const output = execFileSync('ffmpeg', ['-hide_banner', '-filters'], { encoding: 'utf8' })
+    const output = execFileSync(FFMPEG_BINARY, ['-hide_banner', '-filters'], { encoding: 'utf8' })
     subtitleFilterSupport = /\bsubtitles\b/.test(output)
   } catch {
     subtitleFilterSupport = false

@@ -32,12 +32,12 @@
         <div class="settings-head">
           <div class="settings-brand">
             <div class="settings-brand-mark">
-              <img v-if="showBrandImage" :src="brandLogo" alt="Eggfans" class="settings-brand-logo" @error="showBrandImage = false" />
-              <span v-else class="settings-brand-fallback">E</span>
+              <img v-if="showBrandImage" :src="brandLogo" alt="谜镜" class="settings-brand-logo" @error="showBrandImage = false" />
+              <span v-else class="settings-brand-fallback">谜</span>
             </div>
             <div class="settings-brand-copy">
-              <div class="settings-brand-kicker">Eggfans Studio</div>
-              <div class="settings-brand-name">Eggfans</div>
+              <div class="settings-brand-kicker">谜镜 Studio</div>
+              <div class="settings-brand-name">谜镜</div>
             </div>
           </div>
           <h2 class="settings-title">AI 服务配置</h2>
@@ -189,12 +189,12 @@
         <div class="settings-head">
           <div class="settings-brand">
             <div class="settings-brand-mark">
-              <img v-if="showBrandImage" :src="brandLogo" alt="Eggfans" class="settings-brand-logo" @error="showBrandImage = false" />
-              <span v-else class="settings-brand-fallback">E</span>
+              <img v-if="showBrandImage" :src="brandLogo" alt="谜镜" class="settings-brand-logo" @error="showBrandImage = false" />
+              <span v-else class="settings-brand-fallback">谜</span>
             </div>
             <div class="settings-brand-copy">
-              <div class="settings-brand-kicker">Eggfans Studio</div>
-              <div class="settings-brand-name">Eggfans</div>
+              <div class="settings-brand-kicker">谜镜 Studio</div>
+              <div class="settings-brand-name">谜镜</div>
             </div>
           </div>
           <h2 class="settings-title">Agent 配置</h2>
@@ -269,12 +269,12 @@
           <div class="settings-head">
             <div class="settings-brand">
               <div class="settings-brand-mark">
-                <img v-if="showBrandImage" :src="brandLogo" alt="Eggfans" class="settings-brand-logo" @error="showBrandImage = false" />
-                <span v-else class="settings-brand-fallback">E</span>
+                <img v-if="showBrandImage" :src="brandLogo" alt="谜镜" class="settings-brand-logo" @error="showBrandImage = false" />
+                <span v-else class="settings-brand-fallback">谜</span>
               </div>
               <div class="settings-brand-copy">
-                <div class="settings-brand-kicker">Eggfans Studio</div>
-                <div class="settings-brand-name">Eggfans</div>
+                <div class="settings-brand-kicker">谜镜 Studio</div>
+                <div class="settings-brand-name">谜镜</div>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:10px">
@@ -557,7 +557,7 @@ import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, 
 import BaseSelect from '~/components/BaseSelect.vue'
 import { toast } from 'vue-sonner'
 import { aiConfigAPI, agentConfigAPI, skillsAPI, eggfansModelAPI, mijingModelAPI, preferenceAPI } from '~/composables/useApi'
-import brandLogo from '~/assets/eggfans-logo.png'
+import brandLogo from '~/assets/mijing-logo.png'
 
 const showBrandImage = ref(true)
 const tab = ref('ai')
@@ -612,6 +612,9 @@ const presetForm = reactive({
 })
 const serviceTypes = [{ type: 'text', label: '文本' }, { type: 'image', label: '图片' }, { type: 'video', label: '视频' }, { type: 'audio', label: '音频' }]
 const providers = ['ali', 'chatfire', 'eggfans', 'gemini', 'grok_openai', 'mijing', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine']
+const quickProviderWhitelist = ['mijing', 'eggfans']
+const restrictedPresetTypes = ['text', 'image', 'video']
+const visibleProviderWhitelist = ['eggfans', 'mijing']
 const providerLabels = {
   ali: '阿里百炼',
   chatfire: 'ChatFire',
@@ -625,7 +628,7 @@ const providerLabels = {
   vidu: 'Vidu',
   volcengine: '火山方舟官方',
 }
-const providerSelectOptions = computed(() => providers.map(p => ({ label: providerLabels[p] || p, value: p })))
+const providerSelectOptions = computed(() => visibleProviderWhitelist.map(p => ({ label: providerLabels[p] || p, value: p })))
 const serviceMeta = {
   text: { label: '文本', desc: '剧本改写、角色场景提取、分镜拆解等 Agent 文本能力' },
   image: { label: '图片', desc: '角色图、场景图、镜头图与首尾帧等静态图像生成' },
@@ -701,8 +704,6 @@ const eggfansPresetCards = computed(() => [
     ...preset,
     model: presetForm.models[preset.serviceType] || presetDefaults[preset.serviceType],
   })),
-  { serviceType: 'video', label: 'Grok Imagine OpenAI', provider: 'grok_openai', baseUrl: 'https://api.aigcly.top', model: 'grok-imagine-video', priority: 96 },
-  { serviceType: 'seedance', label: 'Seedance 2.0 官方', provider: 'volcengine', baseUrl: 'https://ark.cn-beijing.volces.com', model: 'doubao-seedance-2-0-260128', priority: presetPriority('video', 'volcengine') },
 ])
 const endpointPrefixes = {
   chatfire: '/v1',
@@ -736,7 +737,10 @@ function countActive(t) { return byType(t).filter(c => c.is_active).length }
 function fmtModel(m) { return Array.isArray(m) ? m.join(', ') : m || '—' }
 function presetsByType(type) {
   const group = providerPresets[type] || {}
-  return Object.entries(group).map(([provider, preset]) => ({ provider, ...preset }))
+  const entries = restrictedPresetTypes.includes(type)
+    ? Object.entries(group).filter(([provider]) => quickProviderWhitelist.includes(provider))
+    : Object.entries(group)
+  return entries.map(([provider, preset]) => ({ provider, ...preset }))
 }
 const eggfansModels = ref({})
 const eggfansModelsLoading = ref(false)
@@ -1584,8 +1588,8 @@ onMounted(() => { loadPresetPreferences(); loadCfgs(); loadAgents(); loadAllSkil
   justify-content: center;
 }
 .settings-brand-logo {
-  width: 26px;
-  height: 26px;
+  width: 34px;
+  height: 28px;
   object-fit: contain;
   display: block;
 }
