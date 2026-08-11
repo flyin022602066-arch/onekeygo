@@ -41,33 +41,8 @@
             </div>
           </div>
           <h2 class="settings-title">AI 服务配置</h2>
-          <p class="settings-desc">先用推荐模板快速落配置，再按服务类型微调。工作台创建集时会锁定所选图片、视频和音频能力。</p>
+          <p class="settings-desc">按服务类型添加并调整配置。工作台创建集时会锁定所选图片、视频和音频能力。</p>
         </div>
-        <section class="setup-panel card">
-          <div class="setup-panel-head">
-            <div>
-              <div class="setup-kicker">Quick Setup</div>
-              <div class="setup-title">推荐配置</div>
-              <div class="setup-desc">可一键写入 Eggfans 聚合站配置；Seedance 2.0 视频会保留火山官方接口。</div>
-            </div>
-            <button class="btn btn-primary" @click="openPresetDialog">
-              <Sparkles :size="14" /> 一键配置
-            </button>
-            <button class="btn btn-ghost" @click="openPresetDialog">
-              <Pencil :size="14" /> 编辑推荐
-            </button>
-          </div>
-          <div class="preset-grid">
-            <article v-for="preset in eggfansPresetCards" :key="`${preset.serviceType}-${preset.provider}-${preset.model}`" class="preset-card">
-              <div class="preset-card-top">
-                <span class="preset-service">{{ preset.label }}</span>
-                <span class="tag tag-accent">{{ preset.provider }}</span>
-              </div>
-              <div class="preset-model mono">{{ preset.model }}</div>
-              <div class="preset-base mono">{{ preset.baseUrl }}</div>
-            </article>
-          </div>
-        </section>
         <section class="setup-panel card">
           <div class="setup-panel-head compact">
             <div>
@@ -374,7 +349,7 @@
         </label>
         <label class="field">
           <span class="field-label">API Key</span>
-          <input v-model="cfgForm.api_key" class="input" type="password" :placeholder="cfgEditId ? '留空则保留现有密钥' : 'sk-...'" />
+          <input v-model="cfgForm.api_key" class="input" type="password" :placeholder="cfgEditId ? (cfgForm.has_api_key ? '已配置，留空保持不变' : '输入 API Key') : 'sk-...'" />
         </label>
         <label class="field"><span class="field-label">Base URL</span><input v-model="cfgForm.base_url" class="input" placeholder="https://..." /></label>
         <div class="endpoint-hint">
@@ -382,7 +357,20 @@
           <span class="mono">{{ endpointHint }}</span>
         </div>
         <label class="field">
-          <span class="field-label">模型</span>
+          <span class="field-label model-field-label">
+            <span>模型</span>
+            <button
+              v-if="cfgForm.provider === 'mijing'"
+              type="button"
+              class="btn btn-ghost btn-xs model-refresh-btn"
+              :disabled="mijingModelsLoading"
+              title="刷新谜镜模型列表"
+              @click="refreshMijingModels"
+            >
+              <Loader2 v-if="mijingModelsLoading" :size="12" class="animate-spin" />
+              <span v-else>刷新</span>
+            </button>
+          </span>
           <BaseSelect
             v-if="cfgForm.provider === 'eggfans'"
             :model-value="cfgForm.modelStr"
@@ -553,10 +541,12 @@
 </template>
 
 <script setup>
-import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu, Sparkles } from 'lucide-vue-next'
+import { Plus, Pencil, Trash2, FileText, ChevronDown, Check, Loader2, Bot, Cpu } from 'lucide-vue-next'
 import BaseSelect from '~/components/BaseSelect.vue'
 import { toast } from 'vue-sonner'
 import { aiConfigAPI, agentConfigAPI, skillsAPI, eggfansModelAPI, mijingModelAPI, preferenceAPI } from '~/composables/useApi'
+import { buildConfigTestPayload, resolveMijingBaseUrl } from '~/utils/provider-config'
+import { getDefaultProviderPriority } from '~/utils/provider-defaults'
 import brandLogo from '~/assets/mijing-logo.png'
 
 const showBrandImage = ref(true)
@@ -599,6 +589,7 @@ const cfgForm = reactive({
   endpoint: '',
   query_endpoint: '',
   settings: null,
+  has_api_key: false,
 })
 const presetForm = reactive({
   eggfansApiKey: '',
@@ -614,7 +605,7 @@ const serviceTypes = [{ type: 'text', label: '文本' }, { type: 'image', label:
 const providers = ['ali', 'chatfire', 'eggfans', 'gemini', 'grok_openai', 'mijing', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine']
 const quickProviderWhitelist = ['mijing', 'eggfans']
 const restrictedPresetTypes = ['text', 'image', 'video']
-const visibleProviderWhitelist = ['eggfans', 'mijing']
+const visibleProviderWhitelist = ['mijing', 'eggfans']
 const providerLabels = {
   ali: '阿里百炼',
   chatfire: 'ChatFire',
@@ -639,14 +630,14 @@ const serviceMeta = {
 const providerPresets = {
   text: {
     eggfans: { label: 'Eggfans 推荐', baseUrl: 'https://api.eggfans.com', models: ['gpt-5.5'] },
-    mijing: { label: '谜镜文本', baseUrl: 'https://api.mjing.cc', models: ['豆包2.0-pro'] },
+    mijing: { label: '谜镜文本', baseUrl: resolveMijingBaseUrl('text'), models: ['豆包2.0-pro'] },
     chatfire: { label: 'ChatFire 推荐', baseUrl: 'https://api.chatfire.site', models: ['gemini-3-pro-preview'] },
     openrouter: { label: 'OpenRouter 推荐', baseUrl: 'https://openrouter.ai/api', models: ['google/gemini-3-flash-preview'] },
     openai: { label: 'OpenAI 推荐', baseUrl: 'https://api.openai.com', models: ['gpt-4.1-mini'] },
   },
   image: {
     eggfans: { label: 'Eggfans 推荐', baseUrl: 'https://api.eggfans.com', models: ['gpt-image-2-c'] },
-    mijing: { label: '谜镜图片', baseUrl: 'https://api.mjing.cc', models: ['Seedream5.0'] },
+    mijing: { label: '谜镜图片', baseUrl: resolveMijingBaseUrl('image'), models: ['Seedream5.0'] },
     chatfire: { label: 'ChatFire 推荐', baseUrl: 'https://api.chatfire.site', models: ['doubao-seedream-4-5-251128'] },
     gemini: { label: 'Gemini 推荐', baseUrl: 'https://api.chatfire.site', models: ['gemini-3-pro-image-preview'] },
     volcengine: { label: '火山推荐', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedream-4-0-250828'] },
@@ -686,12 +677,7 @@ const modelPreferenceKey = 'model-preferences-preset'
 let presetPreferencesHydrated = false
 let presetPreferenceSave = Promise.resolve()
 function presetPriority(serviceType, provider) {
-  if (serviceType === 'video' && provider === 'volcengine') return 108
-  if (serviceType === 'video' && provider === 'eggfans') return 98
-  if (serviceType === 'text') return 100
-  if (serviceType === 'image') return 99
-  if (serviceType === 'audio') return 97
-  return 0
+  return getDefaultProviderPriority(serviceType, provider)
 }
 const editableEggfansPresetCards = [
   { serviceType: 'text', label: '文本', provider: 'eggfans', baseUrl: 'https://api.eggfans.com', priority: presetPriority('text', 'eggfans') },
@@ -740,7 +726,9 @@ function presetsByType(type) {
   const entries = restrictedPresetTypes.includes(type)
     ? Object.entries(group).filter(([provider]) => quickProviderWhitelist.includes(provider))
     : Object.entries(group)
-  return entries.map(([provider, preset]) => ({ provider, ...preset }))
+  return entries
+    .map(([provider, preset]) => ({ provider, ...preset }))
+    .sort((a, b) => presetPriority(type, b.provider) - presetPriority(type, a.provider))
 }
 const eggfansModels = ref({})
 const eggfansModelsLoading = ref(false)
@@ -805,12 +793,18 @@ async function loadEggfansModels(type) {
   }
 }
 
-async function loadMijingModels(type) {
-  if (mijingModels.value[type]) return
+async function loadMijingModels(type, force = false) {
+  if (!force && mijingModels.value[type]) return
   mijingModelsLoading.value = true
   try {
-    const result = await mijingModelAPI.list(type, cfgForm.base_url || 'https://api.mjing.cc', cfgEditId.value || undefined)
+    const savedMijingConfigId = cfgs.value.some(config => config.id === cfgEditId.value && config.provider === 'mijing')
+      ? cfgEditId.value
+      : undefined
+    const result = await mijingModelAPI.list(type, cfgForm.base_url || resolveMijingBaseUrl(type), savedMijingConfigId, force)
     mijingModels.value = { ...mijingModels.value, [type]: result.models || [] }
+    if (cfgForm.provider === 'mijing' && cfgForm.service_type === type && cfgForm.modelStr) {
+      if ((result.models || []).some(model => model.name === cfgForm.modelStr)) applyMijingModel(cfgForm.modelStr)
+    }
   } catch (e) {
     toast.error(`谜镜模型加载失败：${e.message}`)
   } finally {
@@ -944,6 +938,7 @@ function applyProviderPreset(type, provider) {
   cfgForm.base_url = preset.baseUrl
   cfgForm.modelStr = preset.models.join(', ')
   cfgForm.name = `${preset.label}-${serviceMeta[type].label}`
+  cfgForm.priority = presetPriority(type, provider)
   clearProviderMetadata()
   if (provider === 'eggfans') applyEggfansModelAfterLoad(type, preset.models[0])
   if (provider === 'mijing') applyMijingModelAfterLoad(type, preset.models[0])
@@ -956,13 +951,17 @@ function applyProviderPreset(type, provider) {
 function onProviderChanged(provider) {
   clearProviderMetadata()
   if (provider === 'eggfans') applyEggfansModelAfterLoad(cfgForm.service_type, cfgForm.modelStr)
-  if (provider === 'mijing') applyMijingModelAfterLoad(cfgForm.service_type, cfgForm.modelStr)
+  if (provider === 'mijing') {
+    const preset = providerPresets[cfgForm.service_type]?.mijing
+    cfgForm.base_url = resolveMijingBaseUrl(cfgForm.service_type) || preset?.baseUrl || cfgForm.base_url
+    if (preset) {
+      cfgForm.modelStr = preset.models[0]
+      applyMijingModelAfterLoad(cfgForm.service_type, preset.models[0])
+    } else {
+      applyMijingModelAfterLoad(cfgForm.service_type, cfgForm.modelStr)
+    }
+  }
   if (provider === 'grok_openai') applyGrokOpenAIModel(cfgForm.modelStr || 'grok-imagine-video')
-}
-
-function openPresetDialog() {
-  presetDialog.value = true
-  loadPresetModels()
 }
 
 function resetPresetPreferences() {
@@ -1131,6 +1130,7 @@ function startAddCfg(t) {
     endpoint: '',
     query_endpoint: '',
     settings: null,
+    has_api_key: false,
   })
   const firstPreset = presetsByType(t)[0]
   if (firstPreset) applyProviderPreset(t, firstPreset.provider)
@@ -1150,6 +1150,7 @@ function startEditCfg(c) {
     endpoint: c.endpoint || '',
     query_endpoint: c.query_endpoint || '',
     settings: c.settings || null,
+    has_api_key: !!c.has_api_key,
   })
   if (c.provider === 'eggfans') {
     loadEggfansModels(c.service_type).then(() => {
@@ -1179,7 +1180,8 @@ async function testCfgPayload(payload) {
   }
 }
 async function testDraftCfg() {
-  await testCfgPayload({
+  await persistCfgKeyDraft()
+  await testCfgPayload(buildConfigTestPayload({
     service_type: cfgForm.service_type,
     provider: cfgForm.provider,
     api_key: cfgForm.api_key,
@@ -1188,7 +1190,47 @@ async function testDraftCfg() {
     endpoint: cfgForm.endpoint || null,
     query_endpoint: cfgForm.query_endpoint || null,
     settings: cfgForm.settings || null,
-  })
+  }, cfgEditId.value))
+}
+
+async function refreshMijingModels() {
+  const type = cfgForm.service_type
+  if (cfgForm.provider !== 'mijing' || !type || mijingModelsLoading.value) return
+  await loadMijingModels(type, true)
+}
+
+let cfgKeyPersistTimer = null
+let cfgKeyPersistQueue = Promise.resolve()
+watch(
+  () => cfgForm.api_key,
+  (value) => {
+    if (!cfgEditId.value || !String(value || '').trim()) return
+    if (cfgKeyPersistTimer) clearTimeout(cfgKeyPersistTimer)
+    const configId = cfgEditId.value
+    const apiKey = String(value).trim()
+    cfgKeyPersistTimer = setTimeout(() => {
+      cfgKeyPersistQueue = cfgKeyPersistQueue
+        .catch(() => undefined)
+        .then(() => aiConfigAPI.update(configId, { api_key: apiKey }))
+        .then(() => { if (cfgEditId.value === configId) cfgForm.has_api_key = true })
+        .catch(error => toast.error(`API Key 自动保存失败：${error.message}`))
+    }, 350)
+  },
+)
+
+async function persistCfgKeyDraft() {
+  if (cfgKeyPersistTimer) {
+    clearTimeout(cfgKeyPersistTimer)
+    cfgKeyPersistTimer = null
+  }
+  if (!cfgEditId.value || !String(cfgForm.api_key || '').trim()) return
+  const configId = cfgEditId.value
+  const apiKey = String(cfgForm.api_key).trim()
+  cfgKeyPersistQueue = cfgKeyPersistQueue
+    .catch(() => undefined)
+    .then(() => aiConfigAPI.update(configId, { api_key: apiKey }))
+    .then(() => { if (cfgEditId.value === configId) cfgForm.has_api_key = true })
+  await cfgKeyPersistQueue
 }
 async function testExistingCfg(c) {
   startEditCfg(c)
@@ -1781,6 +1823,8 @@ onMounted(() => { loadPresetPreferences(); loadCfgs(); loadAgents(); loadAllSkil
 /* Shared */
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field-label { font-size: 12px; font-weight: 500; color: var(--text-1); }
+.model-field-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.model-refresh-btn { min-height: 24px; padding: 3px 8px; font-size: 11px; }
 .field-hint { font-size: 11px; color: var(--text-3); margin-top: 2px; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 

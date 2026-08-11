@@ -79,7 +79,7 @@ test('Mijing gpt-image-2 uses the 1K high-quality defaults', () => {
   assert.equal(req.body.quality, 'high')
 })
 
-test('Mijing image requests use the standard gateway when the creation gateway is configured', () => {
+test('Mijing image requests keep the gateway saved in the configuration', () => {
   const req = new MijingImageAdapter().buildGenerateRequest(
     {
       provider: 'mijing',
@@ -90,5 +90,5 @@ test('Mijing image requests use the standard gateway when the creation gateway i
     { id: 3, model: 'gpt-image-2', prompt: 'test', size: '1K' },
   )
 
-  assert.equal(req.url, 'https://api.mjing.cc/v1/images/generations')
+  assert.equal(req.url, 'https://api.magine.work/v1/images/generations')
 })

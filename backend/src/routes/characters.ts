@@ -8,6 +8,8 @@ import { buildCharacterDesignPrompt } from '../services/character-image-prompt.j
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 import { resolveGenerationConfigId } from './generationConfig.js'
 import { isTkOverseasMode } from '../services/overseas-visual.js'
+import { saveUploadedFileWithExtension } from '../utils/storage.js'
+import { validateImageUpload } from '../utils/upload-validation.js'
 
 const app = new Hono()
 
@@ -33,6 +35,41 @@ app.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   db.update(schema.characters).set({ deletedAt: now() }).where(eq(schema.characters.id, id)).run()
   return success(c)
+})
+
+app.post('/:id/upload-image', async (c) => {
+  const id = Number(c.req.param('id'))
+  const [char] = db.select().from(schema.characters).where(eq(schema.characters.id, id)).all()
+  if (!char || char.deletedAt) return badRequest(c, '角色不存在')
+
+  const body = await c.req.parseBody()
+  const file = body.file
+  if (!file || !(file instanceof File)) return badRequest(c, '请选择角色图片')
+
+  const buffer = await file.arrayBuffer()
+  const validation = validateImageUpload({
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    data: buffer,
+  })
+  if (!validation.ok) return badRequest(c, validation.message)
+
+  const imagePath = await saveUploadedFileWithExtension(buffer, 'characters', validation.extension)
+  db.update(schema.characters).set({
+    imageUrl: imagePath,
+    localPath: imagePath,
+    volcCharacterAssetId: null,
+    volcCharacterUri: null,
+    volcCharacterLocalAssetId: null,
+    volcCharacterSyncedAt: null,
+    volcCharacterSyncStatus: null,
+    volcCharacterSyncError: null,
+    updatedAt: now(),
+  }).where(eq(schema.characters.id, id)).run()
+
+  logTaskSuccess('CharacterImage', 'upload', { characterId: id, path: imagePath })
+  return success(c, { image_url: imagePath, local_path: imagePath })
 })
 
 // POST /characters/:id/generate-voice-sample — 生成角色音色试听

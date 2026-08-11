@@ -7,6 +7,7 @@ import { logTaskProgress, logTaskWarn } from '../utils/task-logger.js'
 import { joinProviderUrl } from './adapters/url.js'
 import { maskSecret } from '../utils/secrets.js'
 import { resolveMijingStandardBaseUrl } from './mijing/models.js'
+import { getEffectiveProviderPriority } from './provider-defaults.js'
 
 export type ServiceType = 'text' | 'image' | 'video' | 'audio' | 'asset' | 'image_host'
 
@@ -22,13 +23,28 @@ export interface AIConfig {
   settings?: Record<string, any> | null
 }
 
+export const DEFAULT_TEXT_STREAM_IDLE_TIMEOUT_MS = 60_000
+
+/** Timeout for an idle text SSE stream, not for the complete generation. */
+export function getTextProviderStreamIdleTimeoutMs(config?: Pick<AIConfig, 'settings'> | null) {
+  const settings = config?.settings || {}
+  const mijingSettings = settings.mijing && typeof settings.mijing === 'object' ? settings.mijing : {}
+  const configured = Number(
+    settings.stream_idle_timeout_ms
+      ?? settings.streamIdleTimeoutMs
+      ?? mijingSettings.stream_idle_timeout_ms
+      ?? mijingSettings.streamIdleTimeoutMs,
+  )
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_TEXT_STREAM_IDLE_TIMEOUT_MS
+  return Math.min(Math.max(Math.round(configured), 1_000), 600_000)
+}
+
 export function getTextProviderBaseUrl(config: AIConfig) {
   const provider = config.provider.toLowerCase()
 
   if (provider === 'mijing') {
-    // Mijing uses separate gateways: api.mjing.cc serves the OpenAI-compatible
-    // text/image APIs, while api.magine.work is the Seedance creation gateway.
-    // A video base URL must never be reused for storyboard text requests.
+    // A tenant API key may be scoped to the configured Mijing gateway.
+    // Do not silently switch its host between configuration testing and use.
     return joinProviderUrl(resolveMijingStandardBaseUrl(config.baseUrl), '/v1', '')
   }
 
@@ -52,7 +68,18 @@ export function getActiveConfig(serviceType: ServiceType): AIConfig | null {
     .where(eq(schema.aiServiceConfigs.serviceType, serviceType))
     .all()
     .filter(r => r.isActive)
-    .sort((a, b) => (b.priority || 0) - (a.priority || 0)) // 高优先级优先
+    .sort((a, b) => {
+      const priorityDiff = getEffectiveProviderPriority(
+        serviceType as 'text' | 'image' | 'video' | 'audio',
+        b.provider,
+        b.priority,
+      ) - getEffectiveProviderPriority(
+        serviceType as 'text' | 'image' | 'video' | 'audio',
+        a.provider,
+        a.priority,
+      )
+      return priorityDiff || Number(b.id) - Number(a.id)
+    }) // 高优先级优先；未设置优先级时谜镜默认优先
 
   const active = rows[0]
   if (!active) {
@@ -67,7 +94,11 @@ export function getActiveConfig(serviceType: ServiceType): AIConfig | null {
     configId: active.id,
     provider: active.provider,
     model: models[0] || '',
-    priority: active.priority,
+    priority: getEffectiveProviderPriority(
+      serviceType as 'text' | 'image' | 'video' | 'audio',
+      active.provider,
+      active.priority,
+    ),
   })
   return {
     id: active.id,

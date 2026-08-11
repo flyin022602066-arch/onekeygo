@@ -15,6 +15,7 @@ import {
   type NormalizedMijingModel,
 } from '../services/mijing/models.js'
 import { getConfigById } from '../services/ai.js'
+import { getDefaultProviderPriority, getEffectiveProviderPriority } from '../services/provider-defaults.js'
 
 const app = new Hono()
 
@@ -58,13 +59,7 @@ const EGGFANS_AGENT_DEFAULTS = [
 const EGGFANS_AGENT_MODEL = ''
 
 export function getPresetPriority(serviceType: PresetServiceType, provider: string) {
-  const normalizedProvider = provider.toLowerCase()
-  if (serviceType === 'video' && normalizedProvider === 'volcengine') return 108
-  if (serviceType === 'video' && normalizedProvider === 'eggfans') return 98
-  if (serviceType === 'text') return 100
-  if (serviceType === 'image') return 99
-  if (serviceType === 'audio') return 97
-  return 0
+  return getDefaultProviderPriority(serviceType, provider)
 }
 
 export function resolveOfficialSeedanceApiKey(seedanceApiKey: unknown, eggfansApiKey: unknown) {
@@ -474,6 +469,11 @@ app.get('/', async (c) => {
   let rows = db.select().from(schema.aiServiceConfigs).all()
   if (serviceType) rows = rows.filter(r => r.serviceType === serviceType)
 
+  rows.sort((a, b) => {
+    const priorityDiff = getEffectiveProviderPriority(b.serviceType as PresetServiceType, b.provider, b.priority) - getEffectiveProviderPriority(a.serviceType as PresetServiceType, a.provider, a.priority)
+    if (priorityDiff !== 0) return priorityDiff
+    return Number(b.id) - Number(a.id)
+  })
   const parsed = rows.map(toClientConfig)
   return success(c, parsed)
 })
@@ -498,7 +498,9 @@ app.post('/', async (c) => {
     endpoint: body.endpoint || null,
     queryEndpoint: body.query_endpoint || null,
     settings: serializeSettings(body.settings),
-    priority: body.priority || 0,
+    priority: Number(body.priority) > 0
+      ? Number(body.priority)
+      : getPresetPriority(body.service_type, body.provider),
     isActive: true,
     createdAt: ts,
     updatedAt: ts,

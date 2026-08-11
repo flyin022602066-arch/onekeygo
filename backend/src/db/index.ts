@@ -311,6 +311,7 @@ sqlite.exec(`
     provider TEXT NOT NULL,
     model TEXT,
     config_id INTEGER,
+    aspect_ratio TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     current_index INTEGER NOT NULL DEFAULT 0,
     total_count INTEGER NOT NULL DEFAULT 0,
@@ -436,6 +437,7 @@ function ensureColumn(table: string, column: string, definition: string) {
 }
 
 ensureColumn('episodes', 'image_config_id', 'INTEGER')
+ensureColumn('video_sequence_runs', 'aspect_ratio', 'TEXT')
 ensureColumn('episodes', 'video_config_id', 'INTEGER')
 ensureColumn('episodes', 'audio_config_id', 'INTEGER')
 ensureColumn('episodes', 'dubbing_enabled', 'INTEGER DEFAULT 0')

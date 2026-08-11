@@ -16,17 +16,33 @@ import { isTkOverseasMode } from '../services/overseas-visual.js'
 
 const app = new Hono()
 
-function normalizeToolName(entry: any) {
-  return entry?.toolName
-    || entry?.tool?.toolName
-    || entry?.tool?.id
-    || entry?.name
-    || entry?.type
-    || null
+function normalizeToolIdentifier(value: unknown) {
+  const text = String(value || '').trim()
+  if (!text) return null
+  return text
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-\s]+/g, '_')
+    .toLowerCase()
 }
 
-function normalizeToolResult(entry: any) {
-  const result = entry?.result ?? entry?.output ?? entry?.data ?? null
+export function normalizeToolName(entry: any) {
+  const payload = entry?.payload && typeof entry.payload === 'object' ? entry.payload : null
+  const directName = entry?.toolName
+    || entry?.name
+    || payload?.toolName
+    || payload?.name
+  if (directName) return normalizeToolIdentifier(directName)
+
+  return normalizeToolIdentifier(entry?.toolName
+    || entry?.tool?.toolName
+    || entry?.tool?.id
+    || entry?.tool?.name
+    || (entry?.type && !['tool-call', 'tool-result'].includes(String(entry.type)) ? entry.type : null))
+}
+
+export function normalizeToolResult(entry: any) {
+  const payload = entry?.payload && typeof entry.payload === 'object' ? entry.payload : null
+  const result = payload?.result ?? entry?.result ?? entry?.output ?? entry?.data ?? null
   return typeof result === 'string' ? result : JSON.stringify(result)
 }
 

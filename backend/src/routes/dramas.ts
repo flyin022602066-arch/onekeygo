@@ -3,12 +3,14 @@ import { eq, isNull, like, desc } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, badRequest, notFound, created, now } from '../utils/response.js'
 import { toSnakeCase, toSnakeCaseArray } from '../utils/transform.js'
+import { getEffectiveProviderPriority } from '../services/provider-defaults.js'
 
 const app = new Hono()
 
 type ConfigCandidate = {
   id: number
   serviceType: string
+  provider?: string | null
   priority?: number | null
   isDefault?: boolean | null
   isActive?: boolean | null
@@ -24,7 +26,15 @@ export function pickDefaultEpisodeConfigIds(rows: ConfigCandidate[]): DefaultEpi
   const pick = (serviceType: string) => rows
     .filter(row => row.serviceType === serviceType && row.isActive !== false)
     .sort((a, b) => {
-      const priorityDiff = (b.priority || 0) - (a.priority || 0)
+      const priorityDiff = getEffectiveProviderPriority(
+        serviceType as 'image' | 'video' | 'audio',
+        b.provider || '',
+        b.priority,
+      ) - getEffectiveProviderPriority(
+        serviceType as 'image' | 'video' | 'audio',
+        a.provider || '',
+        a.priority,
+      )
       if (priorityDiff !== 0) return priorityDiff
       const defaultDiff = Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault))
       if (defaultDiff !== 0) return defaultDiff

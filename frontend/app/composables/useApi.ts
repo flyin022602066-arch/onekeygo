@@ -34,11 +34,19 @@ async function req<T = any>(method: string, path: string, body?: any): Promise<T
   }
 }
 
+async function upload<T = any>(path: string, body: FormData): Promise<T> {
+  const resp = await fetch(`${BASE}${path}`, { method: 'POST', body })
+  const json = await resp.json()
+  if (!resp.ok || (json.code && json.code >= 400)) throw new Error(json.message || `${resp.status}`)
+  return json.data ?? json
+}
+
 export const api = {
   get: <T = any>(p: string) => req<T>('GET', p),
   post: <T = any>(p: string, b?: any) => req<T>('POST', p, b),
   put: <T = any>(p: string, b?: any) => req<T>('PUT', p, b),
   del: <T = any>(p: string) => req<T>('DELETE', p),
+  upload: <T = any>(p: string, body: FormData) => upload<T>(p, body),
 }
 
 export const dramaAPI = {
@@ -70,6 +78,11 @@ export const storyboardAPI = {
 
 export const characterAPI = {
   update: (id: number, data: any) => api.put(`/characters/${id}`, data),
+  uploadImage: (id: number, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return api.upload(`/characters/${id}/upload-image`, body)
+  },
   voiceSample: (id: number, episodeId: number, options?: { config_id?: number | null; model?: string | null }) => api.post(`/characters/${id}/generate-voice-sample`, {
     episode_id: episodeId,
     config_id: options?.config_id || undefined,
@@ -203,11 +216,12 @@ export const eggfansModelAPI = {
 }
 
 export const mijingModelAPI = {
-  list: (serviceType?: string, baseUrl?: string, configId?: number) => {
+  list: (serviceType?: string, baseUrl?: string, configId?: number, refresh = false) => {
     const query = new URLSearchParams()
     if (serviceType) query.set('service_type', serviceType)
     if (baseUrl) query.set('base_url', baseUrl)
     if (configId) query.set('config_id', String(configId))
+    if (refresh) query.set('refresh', '1')
     return api.get(`/mijing/models${query.size ? `?${query.toString()}` : ''}`)
   },
 }

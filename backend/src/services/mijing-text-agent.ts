@@ -5,10 +5,10 @@ import { isGrokDurationPolicy, normalizeStoryboardDuration } from '../agents/too
 import type { StoryboardDurationPolicy } from '../agents/tools/storyboard-tools.js'
 import { getStoryboardBreakdownModeRule } from '../agents/storyboard-video-rules.js'
 import type { AIConfig } from './ai.js'
-import { getTextProviderBaseUrl } from './ai.js'
+import { getTextProviderBaseUrl, getTextProviderStreamIdleTimeoutMs } from './ai.js'
 import { logTaskProgress, logTaskWarn } from '../utils/task-logger.js'
 import { buildVisualStyleLock, withVisualStyleLock } from './visual-style.js'
-import { buildTkOverseasVisualLock, isTkOverseasMode, withTkOverseasVisualLock } from './overseas-visual.js'
+import { buildTkEnglishDialogueLock, buildTkOverseasVisualLock, isTkOverseasMode, withTkOverseasVisualLock } from './overseas-visual.js'
 
 type ToolRecord = {
   toolName: string
@@ -26,8 +26,11 @@ type MijingChatOptions = {
   temperature?: number
   maxOutputTokens?: number
   timeoutMs?: number
+  streamIdleTimeoutMs?: number
   fetchImpl?: typeof fetch
   retryDelaysMs?: number[]
+  /** Internal compatibility switch for gateways that reject stream=true. */
+  forceJson?: boolean
 }
 
 type MijingAgentInput = {
@@ -48,6 +51,7 @@ type MijingAgentInput = {
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504])
 const STORYBOARD_AGENT_TIMEOUT_MS = 600_000
 const DEFAULT_TEXT_AGENT_TIMEOUT_MS = 240_000
+const TEXT_CONNECT_TIMEOUT_MS = 30_000
 
 export function supportsMijingPlainAgent(agentType: string) {
   return ['script_rewriter', 'extractor', 'storyboard_breaker'].includes(agentType)
@@ -70,11 +74,13 @@ export async function requestMijingPlainChat(
   const retryDelays = options.retryDelaysMs || [800, 1800]
   const endpoint = `${getTextProviderBaseUrl(config).replace(/\/+$/, '')}/chat/completions`
   const maxAttempts = retryDelays.length + 1
+  const streamIdleTimeoutMs = options.streamIdleTimeoutMs || getTextProviderStreamIdleTimeoutMs(config)
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController()
     let response: Response
     try {
-      response = await fetchImpl(endpoint, {
+      response = await fetchWithConnectTimeout(fetchImpl, endpoint, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${config.apiKey}`,
@@ -88,10 +94,12 @@ export async function requestMijingPlainChat(
           ],
           temperature: options.temperature ?? 0.4,
           max_tokens: options.maxOutputTokens || 8192,
-          stream: false,
+          stream: options.forceJson !== true,
         }),
-        signal: AbortSignal.timeout(options.timeoutMs || 240_000),
-      })
+        signal: controller.signal,
+      }, controller, options.forceJson === true
+        ? Math.max(TEXT_CONNECT_TIMEOUT_MS, options.timeoutMs || STORYBOARD_AGENT_TIMEOUT_MS)
+        : TEXT_CONNECT_TIMEOUT_MS)
     } catch (error: any) {
       if (attempt < maxAttempts && isRetryableNetworkError(error)) {
         logTaskWarn('MijingText', 'request-retry', { attempt, reason: error?.message || String(error) })
@@ -101,9 +109,17 @@ export async function requestMijingPlainChat(
       throw new Error(`${textProviderLabel(config)}请求失败：${friendlyNetworkError(error)}`)
     }
 
-    const raw = await response.text()
-    const payload = parseJsonSafely(raw)
     if (!response.ok) {
+      const raw = await response.text()
+      if (options.forceJson !== true && isMijingStreamUnsupportedError(response.status, raw)) {
+        logTaskWarn('MijingText', 'stream-compat-fallback', { status: response.status })
+        return requestMijingPlainChat(config, system, user, {
+          ...options,
+          forceJson: true,
+          retryDelaysMs: options.retryDelaysMs || [],
+        })
+      }
+      const payload = parseJsonSafely(raw)
       const message = extractTextProviderError(config, payload, raw, response.status)
       if (attempt < maxAttempts && RETRYABLE_STATUS.has(response.status)) {
         logTaskWarn('MijingText', 'response-retry', { attempt, status: response.status, message })
@@ -113,7 +129,17 @@ export async function requestMijingPlainChat(
       throw new Error(message)
     }
 
-    const content = normalizeMessageContent(payload?.choices?.[0]?.message?.content)
+    let content: string
+    try {
+      content = await readMijingSseContent(response, controller, streamIdleTimeoutMs)
+    } catch (error: any) {
+      if (attempt < maxAttempts && isRetryableNetworkError(error)) {
+        logTaskWarn('MijingText', 'stream-retry', { attempt, reason: error?.message || String(error) })
+        await wait(retryDelays[attempt - 1])
+        continue
+      }
+      throw new Error(`${textProviderLabel(config)}璇锋眰澶辫触锛?{friendlyNetworkError(error)}`)
+    }
     if (!content.trim()) {
       if (attempt < maxAttempts) {
         logTaskWarn('MijingText', 'empty-response-retry', { attempt })
@@ -135,6 +161,10 @@ async function runScriptRewriter(input: MijingAgentInput): Promise<MijingAgentRe
   const source = String(sourceResult?.content || '').trim()
   if (!source) throw new Error('当前集没有可改写的原始内容')
 
+  const tkDialogueLock = isTkOverseasMode(input.breakdownMode)
+    ? buildTkEnglishDialogueLock()
+    : ''
+  const sourceForPrompt = [tkDialogueLock, source].filter(Boolean).join('\n\n')
   const output = await requestMijingPlainChat(
     input.config,
     `你是专业短剧编剧。请把用户提供的原始文本改写为可直接制作的格式化剧本。
@@ -144,8 +174,8 @@ async function runScriptRewriter(input: MijingAgentInput): Promise<MijingAgentRe
 - 动作描写使用自然段落，对白格式：角色名：（状态/表情）台词。
 - 纠正明显的对白归属错误，不要把其他人的台词归给主角。
 - 只输出完整剧本正文，不要输出解释、前言、JSON 或 Markdown 代码块。
-${isTkOverseasMode(input.breakdownMode) ? buildTkOverseasVisualLock('剧本改写与后续选角美术') : ''}`,
-    `${input.message}\n\n【原始内容】\n${source}`,
+${[tkDialogueLock, isTkOverseasMode(input.breakdownMode) ? buildTkOverseasVisualLock('剧本改写与后续选角美术') : ''].filter(Boolean).join('\n')}`,
+    `${input.message}\n\n【原始内容】\n${sourceForPrompt}`,
     requestOptions(input, Math.max(input.maxOutputTokens || 0, 8192)),
   )
   const rewritten = stripCodeFence(output)
@@ -238,10 +268,10 @@ location 必须直接复用上下文 scenes 中的地点名称；只处理当前
     characters: context.characters,
     scenes: context.scenes,
   })
-  const chunks = splitScriptForMijing(
-    script,
-    policy?.mode === 'tk_overseas' ? 900 : script.length > 3000 ? 2400 : 10000,
-  )
+  // TK 海外剧必须让模型同时看到整集剧本。按 900 字切块会切断同一场景的
+  // 多人对白和动作因果，模型只能把每个片段当成独立小故事，最终产生碎片化镜头。
+  // 其他模式仍保留分块，避免超长普通剧本超出上游上下文窗口。
+  const chunks = buildStoryboardScriptChunks(script, policy)
   const boundedChunkLimits = policy?.mode === 'grok_3min'
     ? distributeStoryboardQuota(Number(policy.maxShots || 18), chunks.length)
     : null
@@ -262,11 +292,13 @@ location 必须直接复用上下文 scenes 中的地点名称；只处理当前
   for (let index = 0; index < chunks.length; index++) {
     const perChunkLimit = perChunkLimits[index]
     const quotaHint = policy?.mode === 'tk_overseas'
-      ? '按本段真实叙事节拍拆分，不设固定镜头数量。每镜通常 4-10 秒；仅当连续动作、较长对白或动作结果确实需要时使用 11-15 秒，不要为了凑数量或时长扩写剧情。'
+      ? '这是整集剧本的全局拆解，不是局部片段。先建立整场主画面和人物走位，再按完整叙事节拍拆分；单一场景短段落以 3-5 镜为软目标，目标总时长不少于 60 秒时至少 4 镜，本例型连续对话优先 4-5 镜。多人连续对白必须保留在同一交流单元中，不要按说话人逐句切镜。每镜完整使用 4-15 秒范围：英文对白按约 2.3-2.6 词/秒估时并预留 2-4 秒动作和停顿，累计到约 12-15 秒后才在自然语义或动作结果边界切镜。'
       : perChunkMinimums[index]
       ? `本段建议生成至少 ${perChunkMinimums[index]} 个、最多 ${perChunkLimit} 个镜头；不要因压缩而遗漏本段的场景事件、英文对白或结果。`
       : `本段最多生成 ${perChunkLimit} 个镜头，不要重复其他片段。`
-    const chunkUser = `${input.message}\n\n这是剧本拆解的第 ${index + 1}/${chunks.length} 段。只处理下方剧本片段，但要保留片段内的完整因果。${quotaHint}\n\n【角色场景上下文 JSON】\n${contextJson}\n\n【当前剧本片段】\n${chunks[index]}`
+    const chunkUser = `${input.message}\n\n${policy?.mode === 'tk_overseas'
+      ? '这是当前集完整剧本，请先从全局理解整场空间、人物关系、对白顺序和结尾状态，再输出连续分镜。不要把每句对白或每次说话人切换单独拆镜。'
+      : `这是剧本拆解的第 ${index + 1}/${chunks.length} 段。只处理下方剧本片段，但要保留片段内的完整因果。`} ${quotaHint}\n\n【角色场景上下文 JSON】\n${contextJson}\n\n【当前剧本${policy?.mode === 'tk_overseas' ? '（全集）' : '片段'}】\n${chunks[index]}`
     // 分镜字段多且每个镜头包含详细的图像/视频提示词，不能沿用 8192 的旧硬上限。
     const storyboardOutputTokens = Math.max(input.maxOutputTokens || 0, 12000)
     const chunkOutput = await requestMijingPlainChat(
@@ -515,6 +547,16 @@ export function splitScriptForMijing(script: string, maxChars: number) {
   return chunks.filter(Boolean)
 }
 
+export function buildStoryboardScriptChunks(
+  script: string,
+  policy: StoryboardDurationPolicy | null | undefined,
+) {
+  const source = String(script || '').trim()
+  if (!source) return []
+  if (policy?.mode === 'tk_overseas') return [source]
+  return splitScriptForMijing(source, source.length > 3000 ? 2400 : 10000)
+}
+
 function parseJsonObject(content: string, label: string): Record<string, any> {
   const cleaned = stripCodeFence(content).trim()
   const start = cleaned.indexOf('{')
@@ -541,9 +583,114 @@ function normalizeMessageContent(content: unknown): string {
   return content.map((part: any) => typeof part === 'string' ? part : String(part?.text || '')).join('')
 }
 
+async function fetchWithConnectTimeout(
+  fetchImpl: typeof fetch,
+  endpoint: string,
+  init: RequestInit,
+  controller: AbortController,
+  timeoutMs: number,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const request = fetchImpl(endpoint, init)
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        const error = new Error('stream connect timeout')
+        error.name = 'TimeoutError'
+        reject(error)
+      }, timeoutMs)
+    })
+    return await Promise.race([request, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+async function readMijingSseContent(
+  response: Response,
+  controller: AbortController,
+  idleTimeoutMs: number,
+) {
+  const contentType = response.headers.get('content-type') || ''
+  if (!response.body || !/text\/event-stream/i.test(contentType)) {
+    const raw = await response.text()
+    const payload = parseJsonSafely(raw)
+    return payload ? normalizeMessageContent(payload?.choices?.[0]?.message?.content) : raw
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let content = ''
+  let sawSseEvent = false
+
+  const consumeEvent = (event: string) => {
+    const data = event.split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n')
+      .trim()
+    if (!data) return false
+    sawSseEvent = true
+    if (data === '[DONE]') return true
+    const payload = parseJsonSafely(data)
+    if (!payload) return false
+    const delta = normalizeMessageContent(payload?.choices?.[0]?.delta?.content)
+    content += delta || normalizeMessageContent(payload?.choices?.[0]?.message?.content)
+    return false
+  }
+
+  while (true) {
+    const { value, done } = await readWithIdleTimeout(reader, idleTimeoutMs, controller)
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const events = buffer.split(/\r?\n\r?\n/)
+    buffer = events.pop() || ''
+    for (const event of events) {
+      if (consumeEvent(event)) return content
+    }
+    if (done) break
+  }
+
+  const trailing = buffer.trim()
+  if (trailing) {
+    if (trailing.startsWith('data:')) consumeEvent(trailing)
+    else if (!sawSseEvent) {
+      const payload = parseJsonSafely(trailing)
+      if (payload) content += normalizeMessageContent(payload?.choices?.[0]?.message?.content)
+      else content += trailing
+    }
+  }
+  return content
+}
+
+async function readWithIdleTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+  controller: AbortController,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        const error = new Error('stream idle timeout')
+        error.name = 'TimeoutError'
+        reject(error)
+      }, timeoutMs)
+    })
+    return await Promise.race([reader.read(), timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 function extractTextProviderError(config: AIConfig, payload: any, raw: string, status: number) {
   const detail = String(payload?.error?.message || payload?.message || raw || '').trim()
   const label = textProviderLabel(config)
+  if (/variable type error\s*[：:]?\s*object/i.test(detail)) {
+    return `${label}网关不支持当前流式请求（HTTP ${status}：stream 参数类型错误），已尝试兼容模式仍失败，请稍后重试或更换文本网关`
+  }
   if (detail.includes('负载已饱和')) return `${label}上游当前负载已饱和（HTTP ${status}），已自动重试但仍未恢复`
   if (status === 502 && /bad gateway|nginx/i.test(detail)) {
     return `${label}上游生成超时或网关暂时不可用（HTTP 502），已自动重试但仍未恢复`
@@ -552,6 +699,10 @@ function extractTextProviderError(config: AIConfig, payload: any, raw: string, s
     return `${label}上游接口版本不兼容（HTTP ${status}：platform_model_ratio_source 字段不存在），请在谜镜平台切换可用文本模型或更新接口后重试`
   }
   return `${label}接口返回 HTTP ${status}${detail ? `：${detail}` : ''}`
+}
+
+function isMijingStreamUnsupportedError(status: number, raw: string) {
+  return status === 500 && /variable type error\s*[：:]?\s*object/i.test(raw)
 }
 
 function textProviderLabel(config: AIConfig) {

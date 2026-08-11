@@ -19,6 +19,16 @@ test('default episode configs choose the highest priority active config per serv
   )
 })
 
+test('default episode video prefers Mijing when provider priorities are unset', () => {
+  const result = pickDefaultEpisodeConfigIds([
+    { id: 20, serviceType: 'video', provider: 'volcengine', priority: 108, isActive: true },
+    { id: 21, serviceType: 'video', provider: 'mijing', priority: 0, isActive: true },
+    { id: 22, serviceType: 'video', provider: 'eggfans', priority: 0, isActive: true },
+  ])
+
+  assert.equal(result.videoConfigId, 21)
+})
+
 test('default episode configs use is_default as a tie breaker', () => {
   assert.deepEqual(
     pickDefaultEpisodeConfigIds([

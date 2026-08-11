@@ -39,6 +39,7 @@ export async function startVideoSequence(input: {
   episodeId: number
   configId?: number | null
   model?: string | null
+  aspectRatio?: string | null
 }) {
   const config = input.configId ? getConfigById(Number(input.configId)) : null
   if (!config || !['mijing', 'grok_openai'].includes(String(config.provider || '').toLowerCase())) {
@@ -65,6 +66,7 @@ export async function startVideoSequence(input: {
     provider: config.provider,
     model,
     configId: input.configId || config.id || null,
+    aspectRatio: input.aspectRatio || '16:9',
     status: 'queued',
     currentIndex: 0,
     totalCount: storyboards.length,
@@ -296,6 +298,7 @@ async function processStep(sequence: ReturnType<typeof getVideoSequence>, step: 
       firstFrameUrl: previous ? referenceAssetUris[0] : undefined,
       referenceImageUrls: previous ? referenceAssetUris.slice(1, isGrokOpenAI ? 7 : 9) : referenceAssetUris.slice(0, isGrokOpenAI ? 7 : 9),
       duration: storyboard.duration || 5,
+      aspectRatio: sequence.aspectRatio || undefined,
       configId: sequence.configId || undefined,
     })
     db.update(schema.videoSequenceSteps).set({ status: 'processing', videoGenerationId: generationId, updatedAt: now() }).where(eq(schema.videoSequenceSteps.id, step.id)).run()

@@ -34,6 +34,7 @@ app.post('/sequential', async (c) => {
       episodeId,
       configId,
       model: body.model,
+      aspectRatio: body.aspect_ratio,
     })
     return created(c, sequence)
   } catch (err: any) {
@@ -86,6 +87,7 @@ app.post('/', async (c) => {
       dramaId: body.drama_id,
       referenceMode: body.reference_mode,
       duration: body.duration,
+      aspectRatio: body.aspect_ratio,
     })
     logTaskPayload('VideoAPI', 'request body', body)
     const id = await generateVideo({

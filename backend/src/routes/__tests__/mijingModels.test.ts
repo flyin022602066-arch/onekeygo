@@ -33,3 +33,17 @@ test('GET / returns filtered Mijing model catalog', async () => {
   assert.equal(body.code, 200)
   assert.deepEqual(body.data.models.map((item: any) => item.name), ['seedance2.0创作版'])
 })
+
+test('GET /?refresh=1 reloads the Mijing catalog request', async () => {
+  let calls = 0
+  const app = createMijingModelsRoute(async () => {
+    calls += 1
+    return [model({ name: `model-${calls}`, serviceType: 'text' })]
+  })
+
+  const first = await app.request('/?service_type=text&base_url=https%3A%2F%2Fapi.magine.work')
+  const refreshed = await app.request('/?service_type=text&base_url=https%3A%2F%2Fapi.magine.work&refresh=1')
+  assert.equal(first.status, 200)
+  assert.equal(refreshed.status, 200)
+  assert.equal(calls, 2)
+})

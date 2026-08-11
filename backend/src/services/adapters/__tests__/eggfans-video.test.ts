@@ -29,8 +29,28 @@ test('EggfansVideoAdapter builds HappyHorse AliBailian video requests', () => {
   assert.deepEqual(req.body.input.media, [{ type: 'first_frame', url: 'https://cdn.example/cat.png' }])
   assert.equal(req.body.parameters.duration, 5)
   assert.equal(req.body.parameters.resolution, '720P')
+  assert.equal(req.body.parameters.aspect_ratio, '16:9')
   assert.equal(req.body.parameters.watermark, false)
   assert.equal(req.body.parameters.generate_audio, true)
+})
+
+test('EggfansVideoAdapter forwards a manually selected portrait ratio', () => {
+  const req = adapter.buildGenerateRequest(
+    {
+      provider: 'eggfans',
+      baseUrl: 'https://api.eggfans.com',
+      apiKey: 'secret',
+      model: 'happyhorse-1.0-i2v',
+    },
+    {
+      id: 2,
+      model: 'happyhorse-1.0-i2v',
+      prompt: 'portrait subject',
+      aspectRatio: '9:16',
+    },
+  )
+
+  assert.equal(req.body.parameters.aspect_ratio, '9:16')
 })
 
 test('EggfansVideoAdapter refuses Seedance 2.0 models', () => {

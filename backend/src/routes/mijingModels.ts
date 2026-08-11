@@ -5,6 +5,7 @@ import { db, schema } from '../db/index.js'
 import { getConfigById } from '../services/ai.js'
 import {
   MIJING_BASE_URL,
+  clearMijingModelCache,
   filterMijingModels,
   getMijingModels,
   type NormalizedMijingModel,
@@ -20,6 +21,9 @@ export function createMijingModelsRoute(
   app.get('/', async (c) => {
     const serviceType = c.req.query('service_type')
     const baseUrl = c.req.query('base_url') || MIJING_BASE_URL
+    if (['1', 'true', 'yes'].includes(String(c.req.query('refresh') || '').toLowerCase())) {
+      clearMijingModelCache()
+    }
     const apiKey = getRequestApiKey(c.req.query('api_key'), c.req.query('config_id'), serviceType)
     const models = filterMijingModels(await loadModels(apiKey, baseUrl), serviceType)
     return success(c, { models })

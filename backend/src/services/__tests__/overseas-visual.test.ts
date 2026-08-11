@@ -2,10 +2,17 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildTkOverseasVisualLock,
+  buildTkEnglishDialogueLock,
   isTkOverseasMode,
   stripTkOverseasVisualLock,
   withTkOverseasVisualLock,
 } from '../overseas-visual.js'
+
+test('TK English dialogue lock forbids translation and preserves canonical lines', () => {
+  const lock = buildTkEnglishDialogueLock()
+  assert.match(lock, /Do not translate/)
+  assert.match(lock, /Preserve English dialogue verbatim/)
+})
 
 test('TK overseas mode is explicit and does not affect ordinary projects', () => {
   assert.equal(isTkOverseasMode('tk_overseas'), true)

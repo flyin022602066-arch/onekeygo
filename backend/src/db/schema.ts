@@ -288,6 +288,7 @@ export const videoSequenceRuns = sqliteTable('video_sequence_runs', {
   provider: text('provider').notNull(),
   model: text('model'),
   configId: integer('config_id'),
+  aspectRatio: text('aspect_ratio'),
   status: text('status').notNull().default('queued'),
   currentIndex: integer('current_index').notNull().default(0),
   totalCount: integer('total_count').notNull().default(0),

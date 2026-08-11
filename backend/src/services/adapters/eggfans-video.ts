@@ -158,6 +158,11 @@ export class EggfansVideoAdapter implements VideoProviderAdapter {
         parameters: {
           resolution: '720P',
           duration: normalizeDuration(record.duration),
+          // Eggfans exposes the AliBailian-compatible route but accepts the
+          // requested output ratio as an additional proxy parameter. Keep it
+          // on this route only; the official AliBailian adapter intentionally
+          // remains limited to the documented resolution-driven contract.
+          aspect_ratio: normalizeAliBailianAspectRatio(record.aspectRatio),
           generate_audio: true,
           watermark: false,
         },
@@ -376,6 +381,11 @@ function isGrokVideoModel(model: string) {
 function normalizeGrokAspectRatio(aspectRatio?: string | null) {
   const value = String(aspectRatio || '').trim()
   return ['2:3', '3:2', '1:1'].includes(value) ? value : '3:2'
+}
+
+function normalizeAliBailianAspectRatio(aspectRatio?: string | null) {
+  const value = String(aspectRatio || '').trim()
+  return ['16:9', '9:16', '1:1', '4:3', '3:4'].includes(value) ? value : '16:9'
 }
 
 function getEggfansRouteFamily(config: AIConfig, model: string): EggfansRouteFamily {

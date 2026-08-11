@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { eq } from 'drizzle-orm'
-import { getConfigById, getTextProviderBaseUrl } from '../ai.js'
+import { DEFAULT_TEXT_STREAM_IDLE_TIMEOUT_MS, getConfigById, getTextProviderBaseUrl, getTextProviderStreamIdleTimeoutMs } from '../ai.js'
 import { EggfansTTSAdapter } from '../adapters/eggfans-tts.js'
 import { db, schema } from '../../db/index.js'
 
@@ -39,6 +39,24 @@ test('getTextProviderBaseUrl appends /v1 for Mijing text configs', () => {
     }),
     'https://api.mjing.cc/v1',
   )
+})
+
+test('getTextProviderBaseUrl keeps the configured Mijing gateway', () => {
+  assert.equal(
+    getTextProviderBaseUrl({
+      provider: 'mijing',
+      baseUrl: 'https://api.magine.work/',
+      apiKey: 'key',
+      model: 'deepseek-v4-pro',
+    }),
+    'https://api.magine.work/v1',
+  )
+})
+
+test('text stream idle timeout is configurable with a bounded fallback', () => {
+  assert.equal(getTextProviderStreamIdleTimeoutMs(null), DEFAULT_TEXT_STREAM_IDLE_TIMEOUT_MS)
+  assert.equal(getTextProviderStreamIdleTimeoutMs({ settings: { stream_idle_timeout_ms: 12_345 } }), 12_345)
+  assert.equal(getTextProviderStreamIdleTimeoutMs({ settings: { stream_idle_timeout_ms: 10 } }), 1_000)
 })
 
 test('Eggfans audio request uses the selected model override instead of the locked config model', () => {

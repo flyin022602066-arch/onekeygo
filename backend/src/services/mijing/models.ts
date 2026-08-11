@@ -46,17 +46,22 @@ export interface NormalizedMijingModel {
   transmissionParameters: MijingTransmissionParameters
 }
 
-export const MIJING_BASE_URL = 'https://api.mjing.cc'
-export const MIJING_CREATION_BASE_URL = 'https://api.magine.work'
+// api.mjing.cc is documented as a test environment. Use the production
+// gateway for newly created configurations, while still respecting any
+// explicitly saved legacy gateway.
+export const MIJING_BASE_URL = 'https://api.magine.work'
+export const MIJING_CREATION_BASE_URL = MIJING_BASE_URL
 export const MIJING_CREATION_VIDEO_MODEL = 'seedance2.0创作版'
 
-/** The standard API and Seedance creation API are hosted on separate gateways. */
+/**
+ * Keep the gateway selected in the saved config. Some tenant API keys are
+ * scoped to a specific Mijing gateway, so rewriting a configured URL would
+ * make a successful configuration test fail at
+ * runtime with an authentication error.
+ */
 export function resolveMijingStandardBaseUrl(baseUrl?: string | null) {
   const configured = String(baseUrl || '').trim().replace(/\/+$/, '')
-  if (!configured || /^https:\/\/api\.magine\.work(?:\/v1)?$/i.test(configured)) {
-    return MIJING_BASE_URL
-  }
-  return configured
+  return configured || MIJING_BASE_URL
 }
 const CACHE_MS = 10 * 60 * 1000
 

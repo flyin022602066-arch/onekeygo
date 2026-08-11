@@ -14,7 +14,21 @@ import {
   storyboardGenerationResetValues,
 } from '../../services/storyboard-generation-invalidation.js'
 import { buildVisualStyleLock, withVisualStyleLock } from '../../services/visual-style.js'
-import { withTkOverseasVisualLock } from '../../services/overseas-visual.js'
+import { isTkOverseasMode, withTkOverseasVisualLock } from '../../services/overseas-visual.js'
+
+export function selectStoryboardScriptSource(episode: {
+  breakdownMode?: unknown
+  scriptContent?: unknown
+  content?: unknown
+}) {
+  const rewritten = String(episode.scriptContent || '').trim()
+  const original = String(episode.content || '').trim()
+  // TK overseas must storyboard from the submitted screenplay.  The optional
+  // script_content field may be a translated rewrite and must not replace the
+  // English dialogue source.
+  if (isTkOverseasMode(episode.breakdownMode)) return original || rewritten
+  return rewritten || original
+}
 
 type ExistingStoryboardForPlan = {
   id: number
@@ -312,7 +326,7 @@ export function createStoryboardTools(
       const [ep] = db.select().from(schema.episodes)
         .where(eq(schema.episodes.id, episodeId)).all()
       if (!ep) return { error: 'Episode not found' }
-      const script = ep.scriptContent || ep.content
+      const script = selectStoryboardScriptSource(ep)
       if (!script) return { error: 'Episode has no script' }
 
       const charLinks = db.select().from(schema.episodeCharacters)

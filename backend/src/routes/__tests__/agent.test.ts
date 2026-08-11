@@ -6,6 +6,8 @@ import {
   buildAgentGenerateOptions,
   buildMijingTextFallbackConfig,
   formatAgentProviderError,
+  normalizeToolName,
+  normalizeToolResult,
   normalizeEggfansTextFallbackBaseUrl,
 } from '../agent.js'
 
@@ -92,6 +94,29 @@ test('assertRequiredToolCompleted requires both extraction save operations', () 
     ]),
     /save_dedup_scenes/,
   )
+})
+
+test('normalizes Mastra stream chunks from the payload envelope', () => {
+  const resultChunk = {
+    type: 'tool-result',
+    payload: {
+      toolCallId: 'call-1',
+      toolName: 'save_dedup_characters',
+      result: { created: 1, merged: 2 },
+    },
+  }
+  assert.equal(normalizeToolName(resultChunk), 'save_dedup_characters')
+  assert.equal(normalizeToolResult(resultChunk), '{"created":1,"merged":2}')
+})
+
+test('normalizes Mastra camelCase tool ids to registered snake_case ids', () => {
+  assert.equal(normalizeToolName({ payload: { toolName: 'saveDedupCharacters' } }), 'save_dedup_characters')
+  assert.equal(normalizeToolName({ payload: { toolName: 'saveDedupScenes' } }), 'save_dedup_scenes')
+})
+
+test('does not mistake Mastra chunk types for tool names', () => {
+  assert.equal(normalizeToolName({ type: 'tool-result', payload: {} }), null)
+  assert.equal(normalizeToolName({ type: 'tool-call', payload: {} }), null)
 })
 
 test('Mijing schema failure can use configured Eggfans text without changing active flags', () => {

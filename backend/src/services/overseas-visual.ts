@@ -4,6 +4,21 @@ export function isTkOverseasMode(value: unknown): boolean {
   return String(value || '').trim().toLowerCase() === 'tk_overseas'
 }
 
+/**
+ * TK overseas scripts may contain an English canonical line followed by a
+ * Chinese translation in parentheses.  Keep the canonical dialogue intact
+ * across rewriting, extraction, and storyboard generation.
+ */
+export function buildTkEnglishDialogueLock() {
+  return [
+    'TK ENGLISH DIALOGUE LOCK:',
+    '- Treat every English speaker line and quoted English sentence in the source script as canonical dialogue.',
+    '- Preserve English dialogue verbatim: speaker name, casing, punctuation, quotation marks, contractions, and word order.',
+    '- Do not translate, rewrite, summarize, paraphrase, or replace English dialogue with Chinese.',
+    '- Chinese text in parentheses after an English line is translation or acting guidance only; keep it out of dialogue.',
+  ].join('\n')
+}
+
 export function buildTkOverseasVisualLock(purpose = '当前资产与镜头') {
   return [
     `TK 海外剧视觉锁定（${purpose}）：默认采用欧美/国际真人影视的选角与美术设计。`,

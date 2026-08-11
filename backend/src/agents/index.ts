@@ -18,7 +18,7 @@ import { createVoiceTools } from './tools/voice-tools.js'
 import { createGridPromptTools } from './tools/grid-prompt-tools.js'
 import { loadAgentSkills } from './skills.js'
 import { getStoryboardBreakdownModeRule } from './storyboard-video-rules.js'
-import { buildTkOverseasVisualLock, isTkOverseasMode } from '../services/overseas-visual.js'
+import { buildTkEnglishDialogueLock, buildTkOverseasVisualLock, isTkOverseasMode } from '../services/overseas-visual.js'
 
 // Default prompts (used when DB has no config)
 const DEFAULT_PROMPTS: Record<string, { name: string; instructions: string }> = {
@@ -287,9 +287,13 @@ export function createAgent(type: string, episodeId: number, dramaId: number, op
       : type === 'script_rewriter' && isTkOverseasMode(options.breakdownMode)
         ? buildTkOverseasVisualLock('剧本改写、角色与场景提取')
         : ''
-  const finalInstructions = modeInstructions
-    ? [instructions, '', modeInstructions].join('\n')
-    : instructions
+  const finalInstructions = [
+    instructions,
+    modeInstructions,
+    type === 'script_rewriter' && isTkOverseasMode(options.breakdownMode)
+      ? buildTkEnglishDialogueLock()
+      : '',
+  ].filter(Boolean).join('\n\n')
   const name = dbConfig?.name || defaults.name
 
   let tools: Record<string, any> = {}

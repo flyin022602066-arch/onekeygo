@@ -264,7 +264,7 @@ function transmissionParametersForFamily(family: EggfansRouteFamily, endpointTyp
     'alibailian-video': {
       requestShape: 'AliBailian video synthesis',
       requiredFields: ['model', 'input.prompt'],
-      optionalFields: ['input.media', 'parameters.resolution', 'parameters.duration', 'parameters.generate_audio', 'parameters.watermark'],
+      optionalFields: ['input.media', 'parameters.resolution', 'parameters.aspect_ratio', 'parameters.duration', 'parameters.generate_audio', 'parameters.watermark'],
       imageField: 'input.media[].url',
       durationField: 'parameters.duration',
       pollMethod: 'GET /alibailian/api/v1/tasks/{task_id}',

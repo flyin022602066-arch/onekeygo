@@ -814,8 +814,11 @@
                   searchable
                   style="width:176px"
                 />
-                <button class="btn btn-sm" :disabled="!characterVolcStats.total || !characterVolcStats.missing" @click="syncAllCharacterVolcAssets(false)">
+                <button class="btn btn-sm" :disabled="!visualChars.length || uploadingCharacterImage" @click="openCharacterMaterialDialog">
                   上传角色素材
+                </button>
+                <button v-if="characterVolcStats.total" class="btn btn-sm" :disabled="!characterVolcStats.missing || uploadingCharacterImage" @click="syncAllCharacterVolcAssets(false)">
+                  同步火山
                 </button>
                 <button class="btn btn-sm" @click="batchCharImages">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -850,6 +853,13 @@
                 <div class="asset-foot">
                   <span :class="['dot', (c.image_url || c.imageUrl) && 'ok', isPendingCharImage(c.id) && 'pending']" />
                   <span class="dim" style="font-size:10px">{{ imageBadgeLabel('character', c.id, c.image_url || c.imageUrl) }}</span>
+                  <button
+                    class="btn btn-sm"
+                    :disabled="uploadingCharacterImage"
+                    @click="chooseCharacterMaterial(c)"
+                  >
+                    {{ (c.image_url || c.imageUrl) ? '替换素材' : '上传素材' }}
+                  </button>
                   <button
                     v-if="getCharacterVolcAssetItem(c)"
                     class="btn btn-sm"
@@ -1427,6 +1437,12 @@
                   searchable
                   style="width:250px"
                 />
+                <BaseSelect
+                  v-model="selectedVideoAspectRatio"
+                  :options="videoAspectRatioOptions"
+                  placeholder="视频比例"
+                  style="width:142px"
+                />
                 <button v-if="usesVolcAssetVideoReferences" class="btn btn-sm" :disabled="!volcReferenceStats.total || !volcReferenceStats.missing" @click="syncAllVolcReferences(false)">
                   上传全部参考图
                 </button>
@@ -1848,6 +1864,43 @@
           </div>
         </div>
       </div>
+
+      <input
+        ref="characterMaterialInput"
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        style="display:none"
+        @change="handleCharacterMaterialFile"
+      />
+
+      <div v-if="characterMaterialDialog" class="overlay" @click.self="closeCharacterMaterialDialog">
+        <div class="card character-material-dialog">
+          <div class="character-material-head">
+            <div>
+              <div class="character-material-title">上传角色素材</div>
+              <div class="dim character-material-subtitle">选择一个角色，再从电脑选择对应图片</div>
+            </div>
+            <button class="btn btn-ghost btn-icon" @click="closeCharacterMaterialDialog">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="character-material-list">
+            <div v-for="c in visualChars" :key="c.id" class="character-material-row">
+              <div class="character-material-thumb">
+                <img v-if="c.image_url || c.imageUrl" :src="mediaSrc(c.image_url || c.imageUrl)" :alt="c.name" />
+                <Users v-else :size="18" />
+              </div>
+              <div class="character-material-copy">
+                <strong>{{ c.name }}</strong>
+                <span>{{ c.role || '角色' }}</span>
+              </div>
+              <button class="btn btn-sm" :disabled="uploadingCharacterImage" @click="chooseCharacterMaterial(c)">
+                {{ (c.image_url || c.imageUrl) ? '替换图片' : '选择图片' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
     </div>
   </div>
@@ -1901,6 +1954,10 @@ const mergeErrorMessage = computed(() => {
 
 const scriptStep = ref(0)
 const prodTab = ref('chars')
+const characterMaterialDialog = ref(false)
+const characterMaterialInput = ref(null)
+const characterMaterialTargetId = ref(null)
+const uploadingCharacterImage = ref(false)
 const prodTabIdx = computed({
   get: () => prodTabDefs.value.findIndex(t => t.id === prodTab.value),
   set: (v) => { prodTab.value = prodTabDefs.value[v]?.id || 'chars' },
@@ -1965,8 +2022,10 @@ const gptImage2CSizeOptions = [
   { label: '自动 · auto', value: 'auto' },
 ]
 const selectedVideoModelKey = ref('')
+const selectedVideoAspectRatio = ref('16:9')
 const selectedAudioModelKey = ref('')
 const modelPreferenceKey = 'model-preferences-selected'
+const videoAspectRatioPreferenceKey = 'video-generation-aspect-ratio'
 let modelPreferencesHydrated = false
 let modelPreferenceSave = Promise.resolve()
 const pendingCharImageIds = ref([])
@@ -2078,6 +2137,53 @@ function openImageViewer(src, title = '') {
 
 function closeImageViewer() {
   imageViewer.value = { open: false, src: '', title: '' }
+}
+
+function openCharacterMaterialDialog() {
+  if (!visualChars.value.length) {
+    toast.warning('当前没有可上传的角色')
+    return
+  }
+  characterMaterialDialog.value = true
+}
+
+function closeCharacterMaterialDialog() {
+  if (uploadingCharacterImage.value) return
+  characterMaterialDialog.value = false
+  characterMaterialTargetId.value = null
+}
+
+function chooseCharacterMaterial(char) {
+  characterMaterialTargetId.value = char?.id || null
+  characterMaterialDialog.value = true
+  characterMaterialInput.value?.click()
+}
+
+async function handleCharacterMaterialFile(event) {
+  const input = event?.target
+  const file = input?.files?.[0]
+  input.value = ''
+  const characterId = Number(characterMaterialTargetId.value)
+  if (!file || !characterId) return
+  if (!String(file.type || '').startsWith('image/')) {
+    toast.error('请选择图片文件')
+    return
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    toast.error('角色图片不能超过 10MB')
+    return
+  }
+
+  uploadingCharacterImage.value = true
+  try {
+    await characterAPI.uploadImage(characterId, file)
+    await refresh()
+    toast.success('角色素材已上传并绑定')
+  } catch (error) {
+    toast.error(error?.message || '角色素材上传失败')
+  } finally {
+    uploadingCharacterImage.value = false
+  }
 }
 
 function openVideoViewer(sb, title = '') {
@@ -2308,6 +2414,36 @@ const isEggfansGptImage2C = computed(() =>
 )
 const effectiveVideoModel = computed(() => selectedVideoOption.value.model || firstConfigModel(effectiveVideoConfig.value))
 const effectiveAudioModel = computed(() => selectedAudioOption.value.model || firstConfigModel(effectiveAudioConfig.value))
+const videoAspectRatioOptions = computed(() => {
+  const provider = String(effectiveVideoConfig.value?.provider || '').trim().toLowerCase()
+  const model = String(effectiveVideoModel.value || '').trim().toLowerCase()
+  // xAI's native OpenAI-compatible adapter accepts the standard video ratios.
+  // Eggfans' unified Grok route uses the 3:2/2:3 contract instead, so do not
+  // let the provider name and model name accidentally override one another.
+  if (provider === 'grok_openai') {
+    return [
+      { label: '横屏 · 16:9', value: '16:9' },
+      { label: '竖屏 · 9:16', value: '9:16' },
+  { label: '1x4', value: '1x4' },
+      { label: '横屏 · 4:3', value: '4:3' },
+      { label: '竖屏 · 3:4', value: '3:4' },
+    ]
+  }
+  if (model.includes('grok-video') || model.includes('grok-imagine-video')) {
+    return [
+      { label: '横屏 · 3:2', value: '3:2' },
+      { label: '竖屏 · 2:3', value: '2:3' },
+  { label: '1x4', value: '1x4' },
+    ]
+  }
+  return [
+    { label: '横屏 · 16:9', value: '16:9' },
+    { label: '竖屏 · 9:16', value: '9:16' },
+  { label: '1x4', value: '1x4' },
+    { label: '横屏 · 4:3', value: '4:3' },
+    { label: '竖屏 · 3:4', value: '3:4' },
+  ]
+})
 const storyboardAgentRuntimeLabel = computed(() => {
   const runtime = storyboardAgentRuntime.value
   const model = String(runtime?.model || '').trim()
@@ -2394,6 +2530,7 @@ const imageGenerationOptions = computed(() => ({
 const videoGenerationOptions = computed(() => ({
   config_id: effectiveVideoConfigId.value || undefined,
   model: effectiveVideoModel.value || undefined,
+  aspect_ratio: selectedVideoAspectRatio.value,
 }))
 const audioGenerationOptions = computed(() => ({
   config_id: effectiveAudioConfigId.value || undefined,
@@ -2433,6 +2570,12 @@ watch(usesGrokPublicVideoReferences, (enabled) => {
     storyboardBreakdownMode.value = 'grok_3min'
   } else if (!enabled && storyboardBreakdownMode.value === 'grok_3min') {
     storyboardBreakdownMode.value = 'standard'
+  }
+}, { immediate: true })
+
+watch(videoAspectRatioOptions, (options) => {
+  if (!options.some(option => option.value === selectedVideoAspectRatio.value)) {
+    selectedVideoAspectRatio.value = options[0]?.value || '16:9'
   }
 }, { immediate: true })
 
@@ -2479,6 +2622,11 @@ async function restoreModelPreferences() {
     if (video) selectedVideoModelKey.value = video
     if (audio) selectedAudioModelKey.value = audio
   }
+  try {
+    const storedRatio = await preferenceAPI.get(videoAspectRatioPreferenceKey)
+    const ratio = String(storedRatio?.value || storedRatio || '').trim()
+    if (videoAspectRatioOptions.value.some(option => option.value === ratio)) selectedVideoAspectRatio.value = ratio
+  } catch {}
   modelPreferencesHydrated = true
   persistModelPreferences()
 }
@@ -2503,6 +2651,12 @@ function persistModelPreferences() {
 }
 
 watch([selectedImageModelKey, selectedVideoModelKey, selectedAudioModelKey], persistModelPreferences)
+watch(selectedVideoAspectRatio, (value) => {
+  const ratio = String(value || '').trim()
+  if (!ratio) return
+  try { window.localStorage.setItem(videoAspectRatioPreferenceKey, ratio) } catch {}
+  preferenceAPI.set(videoAspectRatioPreferenceKey, ratio).catch(() => undefined)
+})
 
 // Grid tool state
 const gridDialog = ref(false)
@@ -3597,6 +3751,36 @@ async function refresh() {
   } catch {}
 }
 
+async function refreshExtractedAssets() {
+  const [nextChars, nextScenes] = await Promise.all([
+    episodeAPI.characters(epId.value),
+    episodeAPI.scenes(epId.value),
+  ])
+  chars.value = Array.isArray(nextChars) ? nextChars : []
+  scenes.value = Array.isArray(nextScenes) ? nextScenes : []
+  return { chars: chars.value.length, scenes: scenes.value.length }
+}
+
+function extractedAssetCounts(result) {
+  const text = String(result?.text || result?.data?.text || '')
+  const counts = text.match(/\d+/g)?.map(Number) || []
+  return counts.length >= 2 ? { chars: counts[0], scenes: counts[1] } : null
+}
+
+async function refreshExtractedAssetsUntilSettled(previousCounts, result) {
+  const expected = extractedAssetCounts(result)
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const current = await refreshExtractedAssets()
+    const changed = current.chars !== previousCounts.chars || current.scenes !== previousCounts.scenes
+    const latestResultVisible = expected
+      && current.chars >= expected.chars
+      && current.scenes >= expected.scenes
+    if (changed || latestResultVisible || attempt === 11) return current
+    await sleep(350)
+  }
+  return { chars: chars.value.length, scenes: scenes.value.length }
+}
+
 async function selectStoryboardBreakdownMode(mode) {
   const next = String(mode || 'standard')
   storyboardBreakdownMode.value = next
@@ -3693,6 +3877,7 @@ async function startSequentialGeneration() {
       episode_id: epId.value,
       config_id: effectiveVideoConfigId.value || undefined,
       model: effectiveVideoModel.value || undefined,
+      aspect_ratio: selectedVideoAspectRatio.value,
     })
     syncVideoSequencePolling()
     toast.success(`已启动${sequenceProviderLabel.value}串行生成，将按镜头顺序自动衔接`)
@@ -3788,6 +3973,7 @@ async function doRewrite() {
 
     await refresh()
     scriptStep.value = 2
+    const previousCounts = { chars: chars.value.length, scenes: scenes.value.length }
     const extracted = await runAgent(
       'extractor',
       '请从刚刚改写并保存的剧本中提取所有角色和场景信息，提取时自动与项目已有数据进行去重合并',
@@ -3796,6 +3982,7 @@ async function doRewrite() {
       undefined,
       { extraction_source: 'script', breakdown_mode: storyboardBreakdownMode.value },
     )
+    if (extracted) await refreshExtractedAssetsUntilSettled(previousCounts, extracted)
     await refresh()
     scriptStep.value = 2
     if (extracted) toast.success(`已自动提取 ${chars.value.length} 个角色、${scenes.value.length} 个场景`)
@@ -3817,6 +4004,7 @@ async function skipRewrite() {
 }
 async function doExtract() {
   try {
+    const previousCounts = { chars: chars.value.length, scenes: scenes.value.length }
     const extractionSource = extractionSourceForCurrentContent()
     if (extractionSource === 'raw') await saveRaw()
     else await saveScr()
@@ -3829,6 +4017,7 @@ async function doExtract() {
       { extraction_source: extractionSource, breakdown_mode: storyboardBreakdownMode.value },
     )
     if (!extracted) return
+    await refreshExtractedAssetsUntilSettled(previousCounts, extracted)
     await refresh()
     scriptStep.value = 2
     toast.success(`已提取 ${chars.value.length} 个角色、${scenes.value.length} 个场景`)
@@ -4424,6 +4613,7 @@ function buildVideoRequestParams(sb, prompt, promptIsFinal = false) {
     prompt,
     prompt_is_final: promptIsFinal,
     duration: Number(sb.duration || 5),
+    aspect_ratio: selectedVideoAspectRatio.value,
   }
   const first = getFirstFrame(sb)
   const last = getLastFrame(sb)
@@ -6588,6 +6778,51 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
 }
 .prod-actions { display: flex; gap: 6px; padding: 8px 10px 10px; border-top: 1px solid rgba(27, 41, 64, 0.08); flex-wrap: wrap; min-width: 0; }
 .prod-actions .btn { flex: 1 1 92px; justify-content: center; min-width: 0; white-space: normal; line-height: 1.25; }
+
+.character-material-dialog {
+  width: min(620px, calc(100vw - 40px));
+  max-height: min(720px, calc(100vh - 40px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.character-material-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.character-material-title { font-size: 16px; font-weight: 700; color: var(--text-0); }
+.character-material-subtitle { margin-top: 4px; font-size: 12px; }
+.character-material-list { display: flex; flex-direction: column; gap: 8px; padding: 14px 20px 20px; overflow-y: auto; }
+.character-material-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-1);
+}
+.character-material-thumb {
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-radius: 8px;
+  color: var(--text-3);
+  background: var(--bg-2);
+}
+.character-material-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.character-material-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.character-material-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-0); font-size: 13px; }
+.character-material-copy span { color: var(--text-3); font-size: 11px; }
 
 /* Image viewer */
 .image-viewer-overlay {

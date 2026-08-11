@@ -81,8 +81,14 @@ test('VolcEngine auth and model errors do not pass config test', () => {
   assert.equal(isParameterValidationResponse(400, '{"error":{"message":"content is required"}}'), true)
 })
 
-test('preset priorities prefer official Seedance 2.0 before Eggfans video models', () => {
+test('preset priorities prefer Mijing, then official Seedance, then Eggfans video', () => {
+  assert.equal(getPresetPriority('video', 'mijing') > getPresetPriority('video', 'volcengine'), true)
   assert.equal(getPresetPriority('video', 'volcengine') > getPresetPriority('video', 'eggfans'), true)
+})
+
+test('preset priorities prefer Mijing text and image over Eggfans', () => {
+  assert.equal(getPresetPriority('text', 'mijing') > getPresetPriority('text', 'eggfans'), true)
+  assert.equal(getPresetPriority('image', 'mijing') > getPresetPriority('image', 'eggfans'), true)
 })
 
 test('Eggfans preset does not reuse Eggfans key for official Seedance', () => {

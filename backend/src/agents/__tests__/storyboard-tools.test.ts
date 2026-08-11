@@ -6,11 +6,29 @@ import {
   normalizeStoryboardDurationsForPolicy,
   validateTkSceneCoverage,
   validateStoryboardDurationPolicy,
+  selectStoryboardScriptSource,
 } from '../tools/storyboard-tools.js'
 import {
   haveStoryboardGenerationInputsChanged,
   storyboardGenerationResetValues,
 } from '../../services/storyboard-generation-invalidation.js'
+
+test('TK storyboard context uses the original screenplay so English dialogue is preserved', () => {
+  const source = selectStoryboardScriptSource({
+    breakdownMode: 'tk_overseas',
+    content: 'Ayla: "Stop the ceremony."',
+    scriptContent: 'Translated dialogue',
+  })
+  assert.equal(source, 'Ayla: "Stop the ceremony."')
+})
+
+test('ordinary storyboard mode still prefers rewritten script content', () => {
+  assert.equal(selectStoryboardScriptSource({
+    breakdownMode: 'standard',
+    content: 'Original script',
+    scriptContent: 'Formatted script',
+  }), 'Formatted script')
+})
 
 test('buildStoryboardPersistencePlan preserves existing storyboard ids by shot number', () => {
   const plan = buildStoryboardPersistencePlan(

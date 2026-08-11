@@ -28,17 +28,25 @@ function initializeLogging() {
   const logsDirectory = path.join(app.getPath('userData'), 'logs')
   fs.mkdirSync(logsDirectory, { recursive: true })
   logFile = path.join(logsDirectory, 'desktop.log')
-  const originalConsole = { error: console.error, warn: console.warn, log: console.log }
+  // The packaged app can outlive the shell that launched it. Forwarding
+  // backend logs to a closed stdout/stderr pipe raises an uncaught EPIPE
+  // (notably when the renderer is refreshed), so persist logs only to disk.
+  for (const stream of [process.stdout, process.stderr]) {
+    try {
+      stream?.on?.('error', (error) => {
+        if (error?.code !== 'EPIPE') return
+      })
+    } catch {
+      // File logging below remains available even when a stream is absent.
+    }
+  }
   console.error = (...args) => {
-    originalConsole.error(...args)
     writeLog('error', args.map(String).join(' '))
   }
   console.warn = (...args) => {
-    originalConsole.warn(...args)
     writeLog('warn', args.map(String).join(' '))
   }
   console.log = (...args) => {
-    originalConsole.log(...args)
     writeLog('info', args.map(String).join(' '))
   }
 }

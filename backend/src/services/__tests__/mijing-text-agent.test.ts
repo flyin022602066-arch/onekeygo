@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildMijingStoryboardContext,
+  buildStoryboardScriptChunks,
   distributeStoryboardQuota,
   estimateCompactShotLimit,
   getMijingAgentTimeoutMs,
@@ -10,6 +11,7 @@ import {
   splitScriptForMijing,
   supportsMijingPlainAgent,
 } from '../mijing-text-agent.js'
+import { getStoryboardBreakdownModeRule } from '../../agents/storyboard-video-rules.js'
 
 const config = {
   provider: 'mijing',
@@ -44,9 +46,24 @@ test('compact storyboard limits scale with script content without targeting twel
   assert.equal(estimateCompactShotLimit('甲'.repeat(5000)), 10)
 })
 
-test('TK storyboard minimum shot quota is distributed across screenplay chunks', () => {
+test('storyboard quota helper distributes values across buckets', () => {
   assert.deepEqual(distributeStoryboardQuota(10, 3), [4, 3, 3])
   assert.deepEqual(distributeStoryboardQuota(10, 1), [10])
+})
+
+test('TK storyboard generation keeps the complete script in one global pass', () => {
+  const source = `## S1 | Moon Hall | Night\n${'Ayla and Rowan continue the same confrontation. '.repeat(80)}`.trim()
+  const chunks = buildStoryboardScriptChunks(source, { mode: 'tk_overseas' })
+  assert.deepEqual(chunks, [source])
+})
+
+test('TK storyboard rules preserve a global scene view and merge continuous dialogue', () => {
+  const rule = getStoryboardBreakdownModeRule({ mode: 'tk_overseas' })
+  assert.match(rule, /整场主画面/)
+  assert.match(rule, /3-5 个镜头是软目标/)
+  assert.match(rule, /不要把每句对白或每次说话人切换机械拆成新镜头/)
+  assert.match(rule, /空间轴线、人物位置、道具状态/)
+  assert.match(rule, /12-15 秒/)
 })
 
 test('Mijing full storyboard context excludes old storyboards', () => {
@@ -114,9 +131,79 @@ test('requestMijingPlainChat retries a saturated upstream and returns content', 
   assert.equal(requests[0].url, 'https://api.mjing.cc/v1/chat/completions')
   assert.equal(requests[0].body.max_tokens, 1234)
   assert.equal(requests[0].body.tools, undefined)
+  assert.equal(requests[0].body.stream, true)
 })
 
-test('Mijing text requests use the standard gateway when a video gateway is configured', async () => {
+test('requestMijingPlainChat assembles SSE delta content and does not impose a total request timeout', async () => {
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"part-1 "}}]}\n\n'))
+      setTimeout(() => {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"part-2"}}]}\n\n'))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      }, 20)
+    },
+  })
+  let requestBody: any
+  const result = await requestMijingPlainChat(config, 'system', 'user', {
+    fetchImpl: async (_url: any, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body || '{}'))
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    },
+    retryDelaysMs: [],
+    streamIdleTimeoutMs: 100,
+  })
+
+  assert.equal(requestBody.stream, true)
+  assert.equal(result, 'part-1 part-2')
+})
+
+test('requestMijingPlainChat falls back to JSON when a legacy gateway rejects stream=true', async () => {
+  const requests: any[] = []
+  const fetchImpl = async (_url: any, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body || '{}'))
+    requests.push(body)
+    if (body.stream === true) {
+      return new Response('<h1>variable type error： object</h1>', {
+        status: 500,
+        headers: { 'content-type': 'text/html' },
+      })
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'compat-ok' } }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
+  const result = await requestMijingPlainChat(config, 'system', 'user', {
+    fetchImpl: fetchImpl as typeof fetch,
+    retryDelaysMs: [],
+  })
+
+  assert.equal(result, 'compat-ok')
+  assert.deepEqual(requests.map(item => item.stream), [true, false])
+})
+
+test('requestMijingPlainChat fails an SSE stream after the configured idle timeout', async () => {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'))
+    },
+  })
+
+  await assert.rejects(
+    requestMijingPlainChat(config, 'system', 'user', {
+      fetchImpl: async () => new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
+      retryDelaysMs: [],
+      streamIdleTimeoutMs: 20,
+    }),
+    /请求失败|璇锋眰澶辫触|timeout/i,
+  )
+})
+
+test('Mijing text requests keep the gateway saved in the configuration', async () => {
   let requestUrl = ''
   const result = await requestMijingPlainChat(
     { ...config, baseUrl: 'https://api.magine.work' },
@@ -132,7 +219,7 @@ test('Mijing text requests use the standard gateway when a video gateway is conf
   )
 
   assert.equal(result, 'ok')
-  assert.equal(requestUrl, 'https://api.mjing.cc/v1/chat/completions')
+  assert.equal(requestUrl, 'https://api.magine.work/v1/chat/completions')
 })
 
 test('requestMijingPlainChat reports a useful saturated-upstream error', async () => {
