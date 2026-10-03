@@ -35,6 +35,11 @@ app.post('/sequential', async (c) => {
       configId,
       model: body.model,
       aspectRatio: body.aspect_ratio,
+      megapixels: body.megapixels,
+      steps: body.steps,
+      loraStrength: body.lora_strength ?? body.loraStrength,
+      startStoryboardNumber: body.start_storyboard_number ?? body.startStoryboardNumber,
+      continuityMode: body.continuity_mode ?? body.continuityMode,
     })
     return created(c, sequence)
   } catch (err: any) {
@@ -88,6 +93,9 @@ app.post('/', async (c) => {
       referenceMode: body.reference_mode,
       duration: body.duration,
       aspectRatio: body.aspect_ratio,
+      megapixels: body.megapixels,
+      steps: body.steps,
+      loraStrength: body.lora_strength ?? body.loraStrength,
     })
     logTaskPayload('VideoAPI', 'request body', body)
     const id = await generateVideo({
@@ -99,11 +107,28 @@ app.post('/', async (c) => {
       imageUrl: body.image_url,
       firstFrameUrl: body.first_frame_url,
       lastFrameUrl: body.last_frame_url,
-      referenceImageUrls: body.reference_image_urls,
+      referenceImageUrls: body.reference_image_urls ?? [
+        body.ref_image_0,
+        body.ref_image_1,
+        body.ref_image_2,
+        body.ref_image_3,
+        body.ref_image_4,
+        body.ref_image_5,
+        body.ref_image_6,
+        body.ref_image_7,
+        body.ref_image_8,
+      ].filter(Boolean),
+      referenceAudioUrls: body.reference_audio_urls ?? [body.ref_audio_0, body.ref_audio_1, body.ref_audio_2].filter(Boolean),
       duration: body.duration,
       aspectRatio: body.aspect_ratio,
+      megapixels: body.megapixels,
+      steps: body.steps,
+      loraStrength: body.lora_strength ?? body.loraStrength,
+      seed: body.seed,
       configId,
       promptIsFinal: body.prompt_is_final === true,
+      sequenceRunId: body.sequence_run_id || body.sequenceRunId,
+      continuityMode: body.continuity_mode ?? body.continuityMode,
     })
 
     const [record] = db.select().from(schema.videoGenerations)
@@ -143,6 +168,7 @@ app.post('/preview-prompt', async (c) => {
       referenceImageUrls: body.reference_image_urls,
       duration: body.duration,
       aspectRatio: body.aspect_ratio,
+      megapixels: body.megapixels,
       configId,
       promptIsFinal: body.prompt_is_final === true,
     })

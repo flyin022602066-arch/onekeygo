@@ -7,7 +7,7 @@ export function useAgent() {
   const error = ref('')
   const errorType = ref<string | null>(null)
 
-  async function run(type: string, msg: string, dramaId: number, episodeId: number, onDone?: () => void | Promise<void>, options: Record<string, any> = {}) {
+  async function run(type: string, msg: string, dramaId: number, episodeId: number, onDone?: (result?: any) => void | Promise<void>, options: Record<string, any> = {}) {
     if (running.value) { toast.warning('操作执行中'); return null }
     running.value = true
     runningType.value = type
@@ -20,8 +20,10 @@ export function useAgent() {
         episode_id: episodeId,
         ...options,
       })
+      // Pass the completed response through so callers can perform a
+      // provider-specific read-back check before presenting stale data.
+      await onDone?.(data)
       toast.success('完成')
-      await onDone?.()
       return data
     } catch (err: any) {
       error.value = err?.message || '操作失败'

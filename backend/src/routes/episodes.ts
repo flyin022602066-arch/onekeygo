@@ -7,6 +7,26 @@ import { getStoryboardVideoSource, groupVideoGenerationsByStoryboard } from '../
 
 const app = new Hono()
 
+function inheritDramaAssets(episodeId: number, dramaId: number, createdAt: string) {
+  const characters = db.select({ id: schema.characters.id, deletedAt: schema.characters.deletedAt })
+    .from(schema.characters).where(eq(schema.characters.dramaId, dramaId)).all()
+  for (const character of characters) {
+    if (!character.deletedAt) db.insert(schema.episodeCharacters).values({ episodeId, characterId: character.id, createdAt }).run()
+  }
+
+  const scenes = db.select({ id: schema.scenes.id, deletedAt: schema.scenes.deletedAt })
+    .from(schema.scenes).where(eq(schema.scenes.dramaId, dramaId)).all()
+  for (const scene of scenes) {
+    if (!scene.deletedAt) db.insert(schema.episodeScenes).values({ episodeId, sceneId: scene.id, createdAt }).run()
+  }
+
+  const props = db.select({ id: schema.props.id, deletedAt: schema.props.deletedAt })
+    .from(schema.props).where(eq(schema.props.dramaId, dramaId)).all()
+  for (const prop of props) {
+    if (!prop.deletedAt) db.insert(schema.episodeProps).values({ episodeId, propId: prop.id, createdAt }).run()
+  }
+}
+
 // POST /episodes — Create a new episode
 app.post('/', async (c) => {
   const body = await c.req.json()
@@ -16,6 +36,7 @@ app.post('/', async (c) => {
   }
   const dubbingEnabled = body.dubbing_enabled === true || body.dubbing_enabled === 1 || body.dubbingEnabled === true
   const breakdownMode = String(body.breakdown_mode || body.breakdownMode || 'standard').trim() || 'standard'
+  const breakdownLanguage = String(body.breakdown_language || body.breakdownLanguage || 'zh').trim().toLowerCase() === 'en' ? 'en' : 'zh'
   if (dubbingEnabled && !body.audio_config_id) {
     return badRequest(c, 'audio_config_id is required when dubbing is enabled')
   }
@@ -36,12 +57,14 @@ app.post('/', async (c) => {
     audioConfigId: body.audio_config_id || null,
     dubbingEnabled,
     breakdownMode,
+    breakdownLanguage,
     createdAt: ts,
     updatedAt: ts,
   }).run()
 
   const [ep] = db.select().from(schema.episodes)
     .where(eq(schema.episodes.id, Number(res.lastInsertRowid))).all()
+  inheritDramaAssets(ep.id, ep.dramaId, ts)
   return success(c, {
     id: ep.id,
     episode_number: ep.episodeNumber,
@@ -51,6 +74,7 @@ app.post('/', async (c) => {
     audio_config_id: ep.audioConfigId,
     dubbing_enabled: ep.dubbingEnabled,
     breakdown_mode: ep.breakdownMode || 'standard',
+    breakdown_language: ep.breakdownLanguage || 'zh',
   })
 })
 
@@ -61,7 +85,7 @@ app.put('/:id', async (c) => {
   const [episode] = db.select().from(schema.episodes).where(eq(schema.episodes.id, id)).all()
   if (!episode) return notFound(c, 'Episode not found')
 
-  const allowed = ['content', 'script_content', 'title', 'description', 'status', 'dubbing_enabled', 'breakdown_mode']
+  const allowed = ['content', 'script_content', 'title', 'description', 'status', 'dubbing_enabled', 'breakdown_mode', 'breakdown_language']
   const updates: Record<string, any> = {}
   for (const key of allowed) {
     if (key in body) updates[key] = body[key]
@@ -82,7 +106,10 @@ app.put('/:id', async (c) => {
   }
   if ('breakdown_mode' in updates) {
     const mode = String(updates.breakdown_mode || 'standard').trim()
-    drizzleUpdates.breakdownMode = mode || 'standard'
+    drizzleUpdates.breakdownMode = mode === 'minimax_local_8s_zh' || mode === 'minimax_local_8s_en' ? 'minimax_local_8s' : (mode || 'standard')
+  }
+  if ('breakdown_language' in updates) {
+    drizzleUpdates.breakdownLanguage = String(updates.breakdown_language || 'zh').trim().toLowerCase() === 'en' ? 'en' : 'zh'
   }
 
   await db.update(schema.episodes).set(drizzleUpdates).where(eq(schema.episodes.id, id))
@@ -92,24 +119,33 @@ app.put('/:id', async (c) => {
 // GET /episodes/:id/characters — characters linked to this episode
 app.get('/:id/characters', async (c) => {
   const episodeId = Number(c.req.param('id'))
-  const links = db.select().from(schema.episodeCharacters)
-    .where(eq(schema.episodeCharacters.episodeId, episodeId)).all()
-  const charIds = links.map(l => l.characterId)
-  if (!charIds.length) return success(c, [])
-  const allChars = db.select().from(schema.characters).all()
-  const result = allChars.filter(ch => charIds.includes(ch.id) && !ch.deletedAt)
+  const [episode] = db.select().from(schema.episodes).where(eq(schema.episodes.id, episodeId)).all()
+  if (!episode) return notFound(c, 'Episode not found')
+  const result = db.select().from(schema.characters)
+    .where(eq(schema.characters.dramaId, episode.dramaId)).all()
+    .filter(ch => !ch.deletedAt)
   return success(c, toSnakeCaseArray(result))
 })
 
 // GET /episodes/:id/scenes — scenes linked to this episode
 app.get('/:id/scenes', async (c) => {
   const episodeId = Number(c.req.param('id'))
-  const links = db.select().from(schema.episodeScenes)
-    .where(eq(schema.episodeScenes.episodeId, episodeId)).all()
-  const sceneIds = links.map(l => l.sceneId)
-  if (!sceneIds.length) return success(c, [])
-  const allScenes = db.select().from(schema.scenes).all()
-  const result = allScenes.filter(sc => sceneIds.includes(sc.id) && !sc.deletedAt)
+  const [episode] = db.select().from(schema.episodes).where(eq(schema.episodes.id, episodeId)).all()
+  if (!episode) return notFound(c, 'Episode not found')
+  const result = db.select().from(schema.scenes)
+    .where(eq(schema.scenes.dramaId, episode.dramaId)).all()
+    .filter(sc => !sc.deletedAt)
+  return success(c, toSnakeCaseArray(result))
+})
+
+// GET /episodes/:id/props — props linked to this episode
+app.get('/:id/props', async (c) => {
+  const episodeId = Number(c.req.param('id'))
+  const [episode] = db.select().from(schema.episodes).where(eq(schema.episodes.id, episodeId)).all()
+  if (!episode) return notFound(c, 'Episode not found')
+  const result = db.select().from(schema.props)
+    .where(eq(schema.props.dramaId, episode.dramaId)).all()
+    .filter(prop => !prop.deletedAt)
   return success(c, toSnakeCaseArray(result))
 })
 

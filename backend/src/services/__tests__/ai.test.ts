@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { eq } from 'drizzle-orm'
-import { DEFAULT_TEXT_STREAM_IDLE_TIMEOUT_MS, getConfigById, getTextProviderBaseUrl, getTextProviderStreamIdleTimeoutMs } from '../ai.js'
+import { DEFAULT_TEXT_STREAM_IDLE_TIMEOUT_MS, getConfigById, getTextProviderBaseUrl, getTextProviderStreamIdleTimeoutMs, normalizeEggfansBaseUrl } from '../ai.js'
 import { EggfansTTSAdapter } from '../adapters/eggfans-tts.js'
 import { db, schema } from '../../db/index.js'
 
@@ -9,11 +9,11 @@ test('getTextProviderBaseUrl appends /v1 for Eggfans text configs', () => {
   assert.equal(
     getTextProviderBaseUrl({
       provider: 'eggfans',
-      baseUrl: 'https://api.eggfans.com',
+      baseUrl: 'https://api.eggfans.org',
       apiKey: 'key',
       model: 'qwen3.7-max',
     }),
-    'https://api.eggfans.com/v1',
+    'https://api.eggfans.org/v1',
   )
 })
 
@@ -21,11 +21,11 @@ test('getTextProviderBaseUrl does not duplicate /v1 for Eggfans text configs', (
   assert.equal(
     getTextProviderBaseUrl({
       provider: 'eggfans',
-      baseUrl: 'https://api.eggfans.com/v1',
+      baseUrl: 'https://api.eggfans.org/v1',
       apiKey: 'key',
       model: 'qwen3.7-max',
     }),
-    'https://api.eggfans.com/v1',
+    'https://api.eggfans.org/v1',
   )
 })
 
@@ -39,6 +39,12 @@ test('getTextProviderBaseUrl appends /v1 for Mijing text configs', () => {
     }),
     'https://api.mjing.cc/v1',
   )
+})
+
+test('normalizeEggfansBaseUrl migrates only the legacy Eggfans API host', () => {
+  assert.equal(normalizeEggfansBaseUrl('https://api.eggfans.com'), 'https://api.eggfans.org')
+  assert.equal(normalizeEggfansBaseUrl('https://api.eggfans.com/v1'), 'https://api.eggfans.org/v1')
+  assert.equal(normalizeEggfansBaseUrl('https://custom.example/v1'), 'https://custom.example/v1')
 })
 
 test('getTextProviderBaseUrl keeps the configured Mijing gateway', () => {
@@ -64,7 +70,7 @@ test('Eggfans audio request uses the selected model override instead of the lock
   const req = adapter.buildGenerateRequest(
     {
       provider: 'eggfans',
-      baseUrl: 'https://api.eggfans.com',
+      baseUrl: 'https://api.eggfans.org',
       apiKey: 'secret',
       model: 'speech-2.8-hd',
       endpoint: '/v1beta/models/{model}:generateContent',
@@ -77,7 +83,7 @@ test('Eggfans audio request uses the selected model override instead of the lock
     },
   )
 
-  assert.equal(req.url, 'https://api.eggfans.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent')
+  assert.equal(req.url, 'https://api.eggfans.org/v1beta/models/gemini-3.1-flash-tts-preview:generateContent')
 })
 
 test('getConfigById falls back to an active same-provider same-base-url API key', () => {

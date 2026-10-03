@@ -14,12 +14,14 @@ import {
   MIJING_BASE_URL,
   type NormalizedMijingModel,
 } from '../services/mijing/models.js'
-import { getConfigById } from '../services/ai.js'
+import { getConfigById, normalizeEggfansBaseUrl } from '../services/ai.js'
 import { getDefaultProviderPriority, getEffectiveProviderPriority } from '../services/provider-defaults.js'
+import { fetchProvider } from '../utils/provider-fetch.js'
 
 const app = new Hono()
 
-const EGGFANS_BASE_URL = 'https://api.eggfans.com'
+// Eggfans current API gateway. User-entered Base URLs remain untouched.
+const EGGFANS_BASE_URL = 'https://api.eggfans.org'
 const EGGFANS_IMAGE_HOST_UPLOAD_URL = 'https://imageproxy.zhongzhuan.chat/api/upload'
 const OFFICIAL_VOLCENGINE_BASE_URL = 'https://ark.cn-beijing.volces.com'
 export const OFFICIAL_SEEDANCE_2_MODEL = 'doubao-seedance-2-0-260128'
@@ -73,8 +75,12 @@ function parseModels(model?: string | null): string[] {
 }
 
 function toClientConfig(row: typeof schema.aiServiceConfigs.$inferSelect) {
+  const baseUrl = row.provider?.toLowerCase() === 'eggfans'
+    ? normalizeEggfansBaseUrl(row.baseUrl)
+    : row.baseUrl
   return sanitizeAiConfigForClient({
     ...toSnakeCase(row),
+    base_url: baseUrl,
     model: parseModels(row.model),
     settings: parseSettings(row.settings),
   })
@@ -324,6 +330,26 @@ export function buildProbe(
     }
   }
 
+  if (p === 'comfyui') {
+    return {
+      method: 'GET',
+      url: `${String(baseUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '')}/system_stats`,
+      headers: {},
+      body: undefined,
+    }
+  }
+
+  if (p === 'autodl_comfyui') {
+    // AutoDL exposes no free model-list endpoint. Probe the host root (or a
+    // configured health path) so testing never submits a paid workflow task.
+    return {
+      method: 'GET',
+      url: `${String(baseUrl || 'https://autodl.art').replace(/\/+$/, '')}/`,
+      headers: { ...(apiKey ? { Authorization: apiKey } : {}) },
+      body: undefined,
+    }
+  }
+
   if (p === 'openai' || p === 'openrouter' || p === 'chatfire' || p === 'eggfans' || p === 'grok_openai') {
     return {
       method: 'GET',
@@ -442,6 +468,38 @@ function previewProbeBody(body: unknown) {
   } catch {
     return ''
   }
+}
+
+function isEggfansProvider(provider: string) {
+  return ['eggfans', 'grok_openai'].includes(String(provider || '').toLowerCase())
+}
+
+function isTransientNetworkError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '')
+  return /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket|network/i.test(message)
+}
+
+async function fetchProbeWithRetry(probe: ReturnType<typeof buildProbe>, provider: string) {
+  const attempts = isEggfansProvider(provider) ? 2 : 1
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fetchProvider(probe.url, {
+        method: probe.method,
+        headers: { ...probe.headers, Accept: 'application/json', 'User-Agent': 'Mijing-Studio/2.0', Connection: 'close' },
+        body: probe.body instanceof FormData ? probe.body : probe.body ? JSON.stringify(probe.body) : undefined,
+        signal: AbortSignal.timeout(20_000),
+      })
+    } catch (error) {
+      lastError = error
+      if (attempt + 1 < attempts && isTransientNetworkError(error)) {
+        await new Promise(resolve => setTimeout(resolve, 350))
+        continue
+      }
+      throw error
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError || 'probe failed'))
 }
 
 export function isParameterValidationResponse(status: number, text: string) {
@@ -621,6 +679,10 @@ app.post('/test', async (c) => {
     return badRequest(c, 'service_type, provider and base_url are required')
   }
 
+  if (String(provider).toLowerCase() === 'eggfans') {
+    baseUrl = normalizeEggfansBaseUrl(String(baseUrl))
+  }
+
   const probe = buildProbe(serviceType, provider, baseUrl, model, apiKey, body.endpoint)
   const probeUrl = redactUrl(probe.url)
 
@@ -632,11 +694,7 @@ app.post('/test', async (c) => {
   })
 
   try {
-    const resp = await fetch(probe.url, {
-      method: probe.method,
-      headers: probe.headers,
-      body: probe.body instanceof FormData ? probe.body : probe.body ? JSON.stringify(probe.body) : undefined,
-    })
+    const resp = await fetchProbeWithRetry(probe, String(provider || ''))
     const text = await resp.text()
     const reachable = resp.ok
     const parameterAwareResponse = !resp.ok && !!probe.body && isParameterValidationResponse(resp.status, text)
@@ -678,7 +736,9 @@ app.post('/test', async (c) => {
       method: probe.method,
       url: probeUrl,
       request_preview: previewProbeBody(probe.body),
-      message: error.message || '请求失败',
+      message: isEggfansProvider(String(provider || '')) && /api\.eggfans\.org/i.test(probeUrl) && isTransientNetworkError(error)
+        ? 'Eggfans .org 网关连接失败，请确认新域名 TLS/反向代理已配置并可从本机访问；API Key 和模型尚未校验'
+        : error.message || '请求失败',
       response_preview: '',
     })
   }

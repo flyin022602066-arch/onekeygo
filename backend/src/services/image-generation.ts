@@ -2,12 +2,18 @@ import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { getActiveConfig, getConfigById } from './ai.js'
 import { now } from '../utils/response.js'
-import { downloadFile, readImageAsCompressedDataUrl, saveBase64Image } from '../utils/storage.js'
+import { downloadAssetImage, downloadFile, readImageAsCompressedDataUrl, saveBase64AssetImage, saveBase64Image } from '../utils/storage.js'
 import { getImageAdapter } from './adapters/registry'
 import type { AIConfig } from './adapters/types'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuccess, logTaskWarn, redactUrl } from '../utils/task-logger.js'
-import { syncVolcCharacterAssetForCharacter } from './volc-asset-sync.js'
+import {
+  syncVolcCharacterAssetForCharacter,
+  syncVolcPropAssetForProp,
+  syncVolcSceneAssetForScene,
+} from './volc-asset-sync.js'
 import { isLatestGeneration } from './generation-freshness.js'
+import { fetchProvider } from '../utils/provider-fetch.js'
+import { canResumeBackgroundTasks } from '../utils/background-resume.js'
 
 const RESUMABLE_IMAGE_STATUSES = new Set(['pending', 'processing', 'queued', 'running'])
 const activeImagePollers = new Set<number>()
@@ -24,6 +30,7 @@ interface GenerateImageParams {
   dramaId?: number
   sceneId?: number
   characterId?: number
+  propId?: number
   prompt: string
   model?: string
   size?: string
@@ -46,6 +53,7 @@ export async function generateImage(params: GenerateImageParams): Promise<number
     dramaId: params.dramaId,
     sceneId: params.sceneId,
     characterId: params.characterId,
+    propId: params.propId,
     prompt: params.prompt,
     model: params.model || config.model,
     provider: config.provider,
@@ -64,6 +72,7 @@ export async function generateImage(params: GenerateImageParams): Promise<number
     storyboardId: params.storyboardId,
     sceneId: params.sceneId,
     characterId: params.characterId,
+    propId: params.propId,
     frameType: params.frameType,
     model: params.model || config.model,
   })
@@ -159,7 +168,7 @@ async function processImageGeneration(id: number, config: AIConfig, retryAttempt
       body: summarizeRequestBody(body),
     })
 
-    const resp = await fetch(url, {
+    const resp = await fetchProvider(url, {
       method,
       headers,
       body: rawBody ? body : JSON.stringify(body),
@@ -239,6 +248,7 @@ export function ensureImagePolling(
   record: Pick<ImageGenerationRow, 'id' | 'provider' | 'model' | 'status' | 'taskId' | 'createdAt' | 'updatedAt'> | null | undefined,
   reason = 'api',
 ) {
+  if (!canResumeBackgroundTasks(reason)) return false
   if (isStaleUnrecoverableImageGeneration(record)) {
     db.update(schema.imageGenerations)
       .set({
@@ -488,7 +498,7 @@ async function pollImageTask(id: number, config: AIConfig, taskId: string, retry
         attempt: i + 1,
       })
       const remainingMs = Math.max(1_000, maxDurationMs - (Date.now() - startedAt))
-      const resp = await fetch(url, {
+      const resp = await fetchProvider(url, {
         method,
         headers,
         signal: AbortSignal.timeout(remainingMs),
@@ -615,7 +625,7 @@ export function formatImageProviderFailure(provider: string | null | undefined, 
 function markImageGenerationFailed(id: number, errorMsg: string) {
   const [record] = db.select().from(schema.imageGenerations).where(eq(schema.imageGenerations.id, id)).all()
   db.update(schema.imageGenerations)
-    .set({ status: 'failed', errorMsg, updatedAt: now() })
+    .set({ status: 'failed', errorMsg, completedAt: null, updatedAt: now() })
     .where(eq(schema.imageGenerations.id, id))
     .run()
   if (record?.sceneId && recordIsLatestForTarget(record)) {
@@ -631,17 +641,19 @@ export function shouldFailImagePollImmediately(status: number) {
 }
 
 async function handleImageComplete(id: number, provider: string, imageUrl: string) {
-  const localPath = await downloadFile(imageUrl, 'images')
   const rows = db.select().from(schema.imageGenerations).where(eq(schema.imageGenerations.id, id)).all()
   const record = rows[0]
+  const isAsset = !!(record?.characterId || record?.sceneId || record?.propId)
+  const localPath = isAsset ? await downloadAssetImage(imageUrl, 'images') : await downloadFile(imageUrl, 'images')
 
   db.update(schema.imageGenerations)
-    .set({ imageUrl, localPath, status: 'completed', errorMsg: null, completedAt: now(), updatedAt: now() })
+    .set({ imageUrl, localPath, status: 'processing', errorMsg: null, completedAt: null, updatedAt: now() })
     .where(eq(schema.imageGenerations.id, id))
     .run()
   logTaskSuccess('ImageTask', 'downloaded', { id, provider, localPath })
 
   if (!record || !recordIsLatestForTarget(record)) {
+    markImageGenerationCompleted(id)
     logTaskProgress('ImageTask', 'complete-business-update-ignored', { id, provider, reason: 'newer-generation-exists' })
     return
   }
@@ -655,26 +667,33 @@ async function handleImageComplete(id: number, provider: string, imageUrl: strin
     db.update(schema.storyboards).set(sbUpdate).where(eq(schema.storyboards.id, record.storyboardId)).run()
   }
   if (record?.characterId) {
-    db.update(schema.characters).set({ imageUrl: localPath, updatedAt: now() }).where(eq(schema.characters.id, record.characterId)).run()
+    db.update(schema.characters).set({ imageUrl: localPath, localPath, updatedAt: now() }).where(eq(schema.characters.id, record.characterId)).run()
     await syncCompletedCharacterImageToVolc(record.characterId, id)
   }
   if (record?.sceneId) {
-    db.update(schema.scenes).set({ imageUrl: localPath, status: 'completed', updatedAt: now() }).where(eq(schema.scenes.id, record.sceneId)).run()
+    db.update(schema.scenes).set({ imageUrl: localPath, localPath, status: 'completed', updatedAt: now() }).where(eq(schema.scenes.id, record.sceneId)).run()
   }
+  if (record?.propId) {
+    db.update(schema.props).set({ imageUrl: localPath, localPath, updatedAt: now() }).where(eq(schema.props.id, record.propId)).run()
+  }
+  if (!await syncCompletedSemanticImageToVolc(record, id)) return
+  markImageGenerationCompleted(id)
 }
 
 async function handleImageCompleteBase64(id: number, provider: string, base64Data: string, mimeType: string) {
-  const localPath = await saveBase64Image(base64Data, mimeType, 'images')
   const rows = db.select().from(schema.imageGenerations).where(eq(schema.imageGenerations.id, id)).all()
   const record = rows[0]
+  const isAsset = !!(record?.characterId || record?.sceneId || record?.propId)
+  const localPath = isAsset ? await saveBase64AssetImage(base64Data, 'images') : await saveBase64Image(base64Data, mimeType, 'images')
 
   db.update(schema.imageGenerations)
-    .set({ localPath, status: 'completed', errorMsg: null, completedAt: now(), updatedAt: now() })
+    .set({ localPath, status: 'processing', errorMsg: null, completedAt: null, updatedAt: now() })
     .where(eq(schema.imageGenerations.id, id))
     .run()
   logTaskSuccess('ImageTask', 'saved-base64', { id, provider, mimeType, localPath })
 
   if (!record || !recordIsLatestForTarget(record)) {
+    markImageGenerationCompleted(id)
     logTaskProgress('ImageTask', 'complete-business-update-ignored', { id, provider, reason: 'newer-generation-exists' })
     return
   }
@@ -688,12 +707,24 @@ async function handleImageCompleteBase64(id: number, provider: string, base64Dat
     db.update(schema.storyboards).set(sbUpdate).where(eq(schema.storyboards.id, record.storyboardId)).run()
   }
   if (record?.characterId) {
-    db.update(schema.characters).set({ imageUrl: localPath, updatedAt: now() }).where(eq(schema.characters.id, record.characterId)).run()
+    db.update(schema.characters).set({ imageUrl: localPath, localPath, updatedAt: now() }).where(eq(schema.characters.id, record.characterId)).run()
     await syncCompletedCharacterImageToVolc(record.characterId, id)
   }
   if (record?.sceneId) {
-    db.update(schema.scenes).set({ imageUrl: localPath, status: 'completed', updatedAt: now() }).where(eq(schema.scenes.id, record.sceneId)).run()
+    db.update(schema.scenes).set({ imageUrl: localPath, localPath, status: 'completed', updatedAt: now() }).where(eq(schema.scenes.id, record.sceneId)).run()
   }
+  if (record?.propId) {
+    db.update(schema.props).set({ imageUrl: localPath, localPath, updatedAt: now() }).where(eq(schema.props.id, record.propId)).run()
+  }
+  if (!await syncCompletedSemanticImageToVolc(record, id)) return
+  markImageGenerationCompleted(id)
+}
+
+function markImageGenerationCompleted(id: number) {
+  db.update(schema.imageGenerations)
+    .set({ status: 'completed', errorMsg: null, completedAt: now(), updatedAt: now() })
+    .where(eq(schema.imageGenerations.id, id))
+    .run()
 }
 
 function clearCurrentImageTarget(params: GenerateImageParams, updatedAt: string) {
@@ -711,6 +742,10 @@ function clearCurrentImageTarget(params: GenerateImageParams, updatedAt: string)
       .run()
     return
   }
+  if (params.propId) {
+    db.update(schema.props).set({ imageUrl: null, updatedAt }).where(eq(schema.props.id, params.propId)).run()
+    return
+  }
   if (!params.storyboardId) return
   const update: Record<string, any> = { updatedAt }
   if (params.frameType === 'first_frame') update.firstFrameImage = null
@@ -725,6 +760,8 @@ function recordIsLatestForTarget(record: ImageGenerationRow) {
     rows = rows.filter(item => item.characterId === record.characterId)
   } else if (record.sceneId) {
     rows = rows.filter(item => item.sceneId === record.sceneId)
+  } else if (record.propId) {
+    rows = rows.filter(item => item.propId === record.propId)
   } else if (record.storyboardId) {
     rows = rows.filter(item => item.storyboardId === record.storyboardId && (item.frameType || '') === (record.frameType || ''))
   } else {
@@ -749,4 +786,49 @@ async function syncCompletedCharacterImageToVolc(characterId: number, imageGener
       error: err instanceof Error ? err.message : String(err || 'unknown error'),
     })
   }
+}
+
+type SemanticImageGenerationRecord = Pick<ImageGenerationRow, 'sceneId' | 'propId'>
+
+export async function syncCompletedSemanticImageToVolc(
+  record: SemanticImageGenerationRecord,
+  imageGenerationId: number,
+  syncScene: typeof syncVolcSceneAssetForScene = syncVolcSceneAssetForScene,
+  syncProp: typeof syncVolcPropAssetForProp = syncVolcPropAssetForProp,
+) {
+  if (record.sceneId) {
+    try {
+      const asset = await syncScene(record.sceneId)
+      logTaskSuccess('ImageTask', 'scene-volc-asset-synced', {
+        id: imageGenerationId,
+        sceneId: record.sceneId,
+        providerAssetId: asset.providerAssetId,
+        assetUri: asset.assetUri,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err || 'unknown error')
+      const errorMsg = `场景图片已生成，但自动上传火山素材库失败：${message}`
+      logTaskWarn('ImageTask', 'scene-volc-asset-sync-failed', { id: imageGenerationId, sceneId: record.sceneId, error: message })
+      markImageGenerationFailed(imageGenerationId, errorMsg)
+      return false
+    }
+  }
+  if (record.propId) {
+    try {
+      const asset = await syncProp(record.propId)
+      logTaskSuccess('ImageTask', 'prop-volc-asset-synced', {
+        id: imageGenerationId,
+        propId: record.propId,
+        providerAssetId: asset.providerAssetId,
+        assetUri: asset.assetUri,
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err || 'unknown error')
+      const errorMsg = `道具图片已生成，但自动上传火山素材库失败：${message}`
+      logTaskWarn('ImageTask', 'prop-volc-asset-sync-failed', { id: imageGenerationId, propId: record.propId, error: message })
+      markImageGenerationFailed(imageGenerationId, errorMsg)
+      return false
+    }
+  }
+  return true
 }

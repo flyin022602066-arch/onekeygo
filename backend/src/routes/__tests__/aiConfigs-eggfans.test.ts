@@ -86,6 +86,26 @@ test('preset priorities prefer Mijing, then official Seedance, then Eggfans vide
   assert.equal(getPresetPriority('video', 'volcengine') > getPresetPriority('video', 'eggfans'), true)
 })
 
+test('buildProbe supports the current Eggfans .org gateway', () => {
+  const probe = buildProbe('text', 'eggfans', 'https://api.eggfans.org', 'gpt-5.6-sol', 'key')
+  assert.equal(probe.url, 'https://api.eggfans.org/v1/models')
+})
+
+test('buildProbe uses ComfyUI system stats endpoint without model probing', () => {
+  const probe = buildProbe('video', 'comfyui', 'http://127.0.0.1:8188', 'MiniMax-H3-local')
+  assert.equal(probe.method, 'GET')
+  assert.equal(probe.url, 'http://127.0.0.1:8188/system_stats')
+  assert.equal(probe.body, undefined)
+})
+
+test('buildProbe keeps AutoDL ComfyUI configuration tests read-only', () => {
+  const probe = buildProbe('video', 'autodl_comfyui', 'https://autodl.art', 'minimax_h3_lightx2v_no_pic', 'autodl-token')
+  assert.equal(probe.method, 'GET')
+  assert.equal(probe.url, 'https://autodl.art/')
+  assert.equal(probe.headers.Authorization, 'autodl-token')
+  assert.equal(probe.body, undefined)
+})
+
 test('preset priorities prefer Mijing text and image over Eggfans', () => {
   assert.equal(getPresetPriority('text', 'mijing') > getPresetPriority('text', 'eggfans'), true)
   assert.equal(getPresetPriority('image', 'mijing') > getPresetPriority('image', 'eggfans'), true)

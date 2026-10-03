@@ -3,14 +3,15 @@
  */
 import { Hono } from 'hono'
 import { createAgent, getAgentRuntimeConfig, getResolvedAgentModelConfig, validAgentTypes } from '../agents/index.js'
-import { buildStoryboardAgentMessage, isGrokTenSecondVideoModel } from '../agents/storyboard-video-rules.js'
+import { buildStoryboardAgentMessage } from '../agents/storyboard-video-rules.js'
 import type { StoryboardDurationPolicy } from '../agents/tools/storyboard-tools.js'
-import { runMijingPlainAgent, supportsMijingPlainAgent } from '../services/mijing-text-agent.js'
+import { runMijingPlainAgent, supportsPlainTextAgentProvider } from '../services/mijing-text-agent.js'
 import { success, badRequest } from '../utils/response.js'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 import { db, schema } from '../db/index.js'
 import { and, eq, isNull } from 'drizzle-orm'
 import type { AIConfig } from '../services/ai.js'
+import { normalizeEggfansBaseUrl } from '../services/ai.js'
 import { resolveExtractionSource, type ExtractionSource } from '../agents/tools/extract-tools.js'
 import { isTkOverseasMode } from '../services/overseas-visual.js'
 
@@ -95,7 +96,7 @@ export function buildAgentGenerateCallOptions(generateOptions: {
 export function assertRequiredToolCompleted(agentType: string, toolResults: Array<{ toolName: string | null; result?: string | null }>) {
   const requiredByAgent: Record<string, string[]> = {
     script_rewriter: ['save_script'],
-    extractor: ['save_dedup_characters', 'save_dedup_scenes'],
+    extractor: ['save_dedup_characters', 'save_dedup_scenes', 'save_dedup_props'],
     storyboard_breaker: ['save_storyboards'],
   }
   const required = requiredByAgent[agentType] || []
@@ -103,8 +104,29 @@ export function assertRequiredToolCompleted(agentType: string, toolResults: Arra
   const completed = new Set(toolResults.map(result => result.toolName).filter(Boolean))
   const missing = required.filter(toolName => !completed.has(toolName))
   if (!missing.length) return
-  const label = agentType === 'script_rewriter' ? '剧本改写' : agentType === 'extractor' ? '角色场景提取' : '分镜拆解'
+  const label = agentType === 'script_rewriter' ? '剧本改写' : agentType === 'extractor' ? '角色场景道具提取' : '分镜拆解'
   throw new Error(`${label}没有真正保存结果（缺少 ${missing.join(', ')}），文本模型可能不支持 Agent 工具调用或输出被截断。`)
+}
+
+/**
+ * A storyboard save is only considered complete after the persistence
+ * read-back/repair pass has confirmed the current model result. This prevents
+ * the UI from refreshing against stale storyboard rows or old character links.
+ */
+export function assertStoryboardPersistenceVerified(
+  toolResults: Array<{ toolName: string | null; result?: string | null }>,
+) {
+  const save = toolResults.find(result => result.toolName === 'save_storyboards')
+  if (!save) return
+  let payload: any
+  try {
+    payload = JSON.parse(String(save.result || '{}'))
+  } catch {
+    throw new Error('分镜拆解保存结果无法校验数据库最新状态，请重新拆解')
+  }
+  if (payload?.persistence_verified !== true) {
+    throw new Error('分镜拆解保存后校验未通过，数据库中可能仍是旧分镜或旧角色关联，请重新拆解')
+  }
 }
 
 export function formatAgentProviderError(error: any) {
@@ -161,8 +183,7 @@ export function buildMijingTextFallbackConfig(
 }
 
 export function normalizeEggfansTextFallbackBaseUrl(baseUrl: string) {
-  const normalized = String(baseUrl || '').trim().replace(/\/+$/, '')
-  return /^https:\/\/api\.eggfans\.com$/i.test(normalized) ? 'https://eggfans.com' : normalized
+  return normalizeEggfansBaseUrl(baseUrl).replace(/\/+$/, '')
 }
 
 function parseStringArray(value?: string | null) {
@@ -183,9 +204,21 @@ function parseJsonObject(value?: string | null) {
   }
 }
 
-function normalizeStoryboardDurationPolicy(body: any): StoryboardDurationPolicy | null {
+export function normalizeStoryboardDurationPolicy(body: any): StoryboardDurationPolicy | null {
   const raw = body?.storyboard_policy || body?.storyboardPolicy || body?.breakdown_policy || body?.breakdownPolicy || null
   const mode = String(raw?.mode || body?.storyboard_mode || body?.storyboardMode || body?.breakdown_mode || body?.breakdownMode || '').trim()
+  if (mode === 'minimax_local_8s' || mode === 'minimax_local_8s_zh' || mode === 'minimax_local_8s_en') {
+    const language = String(raw?.language ?? raw?.storyboard_language ?? body?.storyboard_language ?? body?.storyboardLanguage ?? (mode.endsWith('_en') ? 'en' : 'zh')).trim().toLowerCase()
+    return {
+      mode: 'minimax_local_8s',
+      shotDuration: 8,
+      shotDurationMin: 8,
+      shotDurationMax: 10,
+      language: language === 'en' ? 'en' : 'zh',
+    }
+  }
+  if (mode === 'full') return { mode: 'full' }
+  if (mode === 'standard') return { mode: 'standard' }
   if (mode === 'tk_overseas') {
     const shotDuration = normalizePositiveInteger(raw?.shot_duration ?? raw?.shotDuration ?? body?.shot_duration ?? body?.shotDuration)
     const shotDurationMin = normalizePositiveInteger(raw?.shot_duration_min ?? raw?.shotDurationMin ?? body?.shot_duration_min ?? body?.shotDurationMin) || (shotDuration || 4)
@@ -205,13 +238,7 @@ function normalizeStoryboardDurationPolicy(body: any): StoryboardDurationPolicy 
       maxShots,
     }
   }
-  const isGrokTenSecond = isGrokTenSecondVideoModel({
-    model: body?.video_model || body?.videoModel,
-    provider: body?.video_provider || body?.videoProvider,
-    label: body?.video_model_label || body?.videoModelLabel,
-  })
-  if (mode !== 'grok_3min' && !isGrokTenSecond) return null
-
+  if (mode !== 'grok_3min' && mode !== 'grok_10s') return { mode: 'standard' }
   const shotDuration = normalizePositiveInteger(raw?.shot_duration ?? raw?.shotDuration ?? body?.shot_duration ?? body?.shotDuration) || 10
   if (mode !== 'grok_3min') {
     return { mode: 'grok_10s', shotDuration }
@@ -242,9 +269,14 @@ app.post('/:type/chat', async (c) => {
   const [requestEpisode] = episode_id
     ? db.select().from(schema.episodes).where(eq(schema.episodes.id, Number(episode_id))).all()
     : []
-  const requestedBreakdownMode = String(
+  const rawBreakdownMode = String(
     body.breakdown_mode || body.breakdownMode || body.storyboard_mode || body.storyboardMode || requestEpisode?.breakdownMode || 'standard',
   ).trim() || 'standard'
+  const requestedBreakdownMode = rawBreakdownMode === 'minimax_local_8s_zh' || rawBreakdownMode === 'minimax_local_8s_en'
+    ? 'minimax_local_8s'
+    : ['standard', 'full', 'tk_overseas', 'grok_3min', 'grok_10s', 'minimax_local_8s'].includes(rawBreakdownMode)
+      ? rawBreakdownMode
+      : 'standard'
   const extractionSource = agentType === 'extractor' ? normalizeExtractionSource(body) : undefined
   const storyboardDurationPolicy = agentType === 'storyboard_breaker'
     ? normalizeStoryboardDurationPolicy(body)
@@ -271,11 +303,27 @@ app.post('/:type/chat', async (c) => {
     return badRequest(c, 'drama_id and episode_id are required')
   }
 
-  if (requestEpisode && requestEpisode.breakdownMode !== requestedBreakdownMode) {
-    db.update(schema.episodes)
-      .set({ breakdownMode: requestedBreakdownMode, updatedAt: new Date().toISOString() })
-      .where(eq(schema.episodes.id, Number(episode_id)))
-      .run()
+  if (requestEpisode) {
+    const episodeUpdates: Record<string, any> = {}
+    if (requestEpisode.breakdownMode !== requestedBreakdownMode) {
+      episodeUpdates.breakdownMode = requestedBreakdownMode
+    }
+    // Persist the selected MiniMax language even when the request comes from
+    // an API/client other than the Vue selector. Otherwise a refresh could
+    // display the previous language while the just-created storyboard used
+    // the new one.
+    if (agentType === 'storyboard_breaker' && storyboardDurationPolicy?.mode === 'minimax_local_8s') {
+      const nextLanguage = storyboardDurationPolicy.language === 'en' ? 'en' : 'zh'
+      if (requestEpisode.breakdownLanguage !== nextLanguage) {
+        episodeUpdates.breakdownLanguage = nextLanguage
+      }
+    }
+    if (Object.keys(episodeUpdates).length) {
+      db.update(schema.episodes)
+        .set({ ...episodeUpdates, updatedAt: new Date().toISOString() })
+        .where(eq(schema.episodes.id, Number(episode_id)))
+        .run()
+    }
   }
 
   if (agentType === 'voice_assigner') {
@@ -286,16 +334,15 @@ app.post('/:type/chat', async (c) => {
   const agentConfig = getAgentConfig(agentType)
   const generateOptions = buildAgentGenerateOptions(agentConfig ? { ...agentConfig, agentType } : { agentType })
   const resolvedModel = getResolvedAgentModelConfig(agentType)
-  const useMijingPlainAgent = resolvedModel.config.provider.toLowerCase() === 'mijing'
-    && supportsMijingPlainAgent(agentType)
-  const agent = useMijingPlainAgent
+  const usePlainTextAgent = supportsPlainTextAgentProvider(resolvedModel.config.provider, agentType)
+  const agent = usePlainTextAgent
     ? null
     : createAgent(agentType, episode_id, drama_id, {
         storyboardDurationPolicy,
         extractionSource,
         breakdownMode: requestedBreakdownMode,
       })
-  if (!agent && !useMijingPlainAgent) {
+  if (!agent && !usePlainTextAgent) {
     logTaskError('Agent', agentType, { reason: 'agent not found' })
     return badRequest(c, 'Agent not found')
   }
@@ -316,7 +363,7 @@ app.post('/:type/chat', async (c) => {
       temperature: generateOptions.temperature,
       maxOutputTokens: generateOptions.maxOutputTokens,
     })
-    const result = useMijingPlainAgent
+    const result = usePlainTextAgent
       ? await runPlainAgent(primaryPlainConfig).catch(async (error) => {
           const fallbackConfig = buildMijingTextFallbackConfig(
             db.select().from(schema.aiServiceConfigs).all(),
@@ -357,6 +404,9 @@ app.post('/:type/chat', async (c) => {
     })
     logTaskPayload('Agent', `${agentType} tool-results`, normalizedToolResults)
     assertRequiredToolCompleted(agentType, normalizedToolResults)
+    if (agentType === 'storyboard_breaker') {
+      assertStoryboardPersistenceVerified(normalizedToolResults)
+    }
 
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(1)
     logTaskSuccess('Agent', agentType, { elapsedSeconds: elapsed })

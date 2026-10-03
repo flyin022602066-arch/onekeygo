@@ -9,6 +9,7 @@ import dramas from './routes/dramas.js'
 import episodes from './routes/episodes.js'
 import storyboards from './routes/storyboards.js'
 import scenes from './routes/scenes.js'
+import props from './routes/props.js'
 import characters from './routes/characters.js'
 import images from './routes/images.js'
 import videos from './routes/videos.js'
@@ -33,6 +34,8 @@ import { resumePendingVideoPolls } from './services/video-generation.js'
 import { resumeVideoSequences } from './services/video-sequence.js'
 import { resumePendingImagePolls } from './services/image-generation.js'
 import { configureMediaTools } from './services/media-tools.js'
+import { syncMissingVolcSemanticAssets } from './services/volc-asset-sync.js'
+import { canResumeBackgroundTasks } from './utils/background-resume.js'
 
 const projectRoot = appConfig.projectRoot
 configureMediaTools()
@@ -63,6 +66,7 @@ api.route('/dramas', dramas)
 api.route('/episodes', episodes)
 api.route('/storyboards', storyboards)
 api.route('/scenes', scenes)
+api.route('/props', props)
 api.route('/characters', characters)
 api.route('/images', images)
 api.route('/videos', videos)
@@ -122,13 +126,20 @@ serve({
     headersTimeout: 600_000,
   },
 })
-resumePendingVideoPolls('startup').catch((err) => {
-  console.error('Failed to resume pending video polls:', err)
-})
-resumeVideoSequences('startup')
-resumePendingImagePolls('startup').catch((err) => {
-  console.error('Failed to resume pending image polls:', err)
-})
+if (canResumeBackgroundTasks()) {
+  resumePendingVideoPolls('startup').catch((err) => {
+    console.error('Failed to resume pending video polls:', err)
+  })
+  resumeVideoSequences('startup')
+  resumePendingImagePolls('startup').catch((err) => {
+    console.error('Failed to resume pending image polls:', err)
+  })
+  syncMissingVolcSemanticAssets('startup').catch((err) => {
+    console.error('Failed to backfill Volc scene and prop assets:', err)
+  })
+} else {
+  console.log('Automatic background recovery is paused for this session; explicit generation remains available.')
+}
 
 function fsPathExists(targetPath: string) {
   return !!targetPath && fs.existsSync(targetPath)

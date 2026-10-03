@@ -139,18 +139,49 @@ const dramas = ref([])
 const loading = ref(false)
 const showCreate = ref(false)
 const form = ref({ title: '', total_episodes: 1, style: '' })
+// Keep the choices grouped by production language. The value is persisted on
+// the drama and resolved by backend/src/services/visual-style.ts, so every
+// option here has a matching prompt lock on the backend.
 const styleOptions = [
-  { label: '写实', value: 'realistic' },
-  { label: '动漫', value: 'anime' },
-  { label: '吉卜力', value: 'ghibli' },
-  { label: '电影感', value: 'cinematic' },
-  { label: '漫画', value: 'comic' },
-  { label: '水彩', value: 'watercolor' },
+  {
+    label: '真人影视',
+    options: [
+      { label: '写实真人', value: 'realistic' },
+      { label: '电影感真人', value: 'cinematic' },
+      { label: '纪录片纪实', value: 'documentary' },
+      { label: '商业广告', value: 'commercial' },
+      { label: '黑色电影', value: 'film_noir' },
+      { label: '复古胶片', value: 'vintage_film' },
+    ],
+  },
+  {
+    label: '动画与插画',
+    options: [
+      { label: '二维动漫', value: 'anime' },
+      { label: '手绘动画', value: 'ghibli' },
+      { label: '漫画分镜', value: 'comic' },
+      { label: '水彩绘本', value: 'watercolor' },
+      { label: '国风水墨', value: 'ink_wash' },
+      { label: '3D动画', value: '3d_animation' },
+      { label: '定格动画', value: 'stop_motion' },
+    ],
+  },
+  {
+    label: '类型化视觉',
+    options: [
+      { label: '东方古风', value: 'oriental_period' },
+      { label: '奇幻史诗', value: 'fantasy_epic' },
+      { label: '科幻未来', value: 'sci_fi' },
+      { label: '赛博朋克', value: 'cyberpunk' },
+    ],
+  },
 ]
 const styleSelectOptions = computed(() => styleOptions)
 
 function styleLabel(value) {
-  return styleOptions.find(item => item.value === value)?.label || value
+  return styleOptions
+    .flatMap(group => group.options)
+    .find(item => item.value === value)?.label || value
 }
 
 async function load() {

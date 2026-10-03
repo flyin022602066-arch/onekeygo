@@ -77,7 +77,7 @@ for (const iconName of ['favicon.ico', 'favicon.png']) {
   const sourceIcon = path.join(projectRoot, 'frontend', 'public', iconName)
   if (fileExists(sourceIcon)) await fs.copyFile(sourceIcon, path.join(runtimeRoot, 'frontend', 'dist', iconName))
 }
-const appIcon = path.join(projectRoot, 'frontend', 'public', 'mijing-logo.png')
+const appIcon = path.join(projectRoot, 'frontend', 'public', 'eggfans-logo.png')
 if (fileExists(appIcon)) await fs.copyFile(appIcon, path.join(runtimeRoot, 'app-icon.png'))
 await copyDirectory(path.join(projectRoot, 'configs'), path.join(runtimeRoot, 'configs'))
 await copyDirectory(path.join(projectRoot, 'skills'), path.join(runtimeRoot, 'skills'))

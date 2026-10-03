@@ -6,6 +6,7 @@ import {
   isRetryableImageProviderFailure,
   isStaleUnrecoverableImageGeneration,
   shouldFailImagePollImmediately,
+  syncCompletedSemanticImageToVolc,
 } from '../image-generation.js'
 
 test('isResumableImageGeneration only resumes async image tasks with task ids', () => {
@@ -75,4 +76,44 @@ test('image provider failures preserve actionable upstream details', () => {
   const message = 'API error 401: {"error":{"code":"AuthenticationError","message":"key is invalid"}}'
   assert.equal(formatImageProviderFailure('eggfans', message), message)
   assert.match(formatImageProviderFailure('mijing', '当前分组上游负载已饱和（request id: abc）', 1), /request id: abc/)
+})
+
+test('completed scene and prop images automatically call their Volc asset syncers', async () => {
+  const calls: string[] = []
+  const synced = {
+    localAssetId: 1,
+    providerAssetId: 'asset-test',
+    assetUri: 'Asset://asset-test',
+    groupName: 'test',
+    publicUrl: 'https://example.com/test.png',
+  }
+  assert.equal(await syncCompletedSemanticImageToVolc(
+    { sceneId: 101, propId: null },
+    -101,
+    async (sceneId) => { calls.push(`scene:${sceneId}`); return synced },
+    async (propId) => { calls.push(`prop:${propId}`); return synced },
+  ), true)
+  assert.equal(await syncCompletedSemanticImageToVolc(
+    { sceneId: null, propId: 202 },
+    -202,
+    async (sceneId) => { calls.push(`scene:${sceneId}`); return synced },
+    async (propId) => { calls.push(`prop:${propId}`); return synced },
+  ), true)
+  assert.deepEqual(calls, ['scene:101', 'prop:202'])
+})
+
+test('automatic Volc upload failure prevents a generated semantic image from being treated as fully complete', async () => {
+  const synced = {
+    localAssetId: 1,
+    providerAssetId: 'asset-test',
+    assetUri: 'Asset://asset-test',
+    groupName: 'test',
+    publicUrl: 'https://example.com/test.png',
+  }
+  assert.equal(await syncCompletedSemanticImageToVolc(
+    { sceneId: 303, propId: null },
+    -303,
+    async () => { throw new Error('upload rejected') },
+    async () => synced,
+  ), false)
 })

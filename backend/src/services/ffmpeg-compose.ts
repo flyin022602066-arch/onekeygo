@@ -145,7 +145,13 @@ export async function composeStoryboard(storyboardId: number, options: ComposeSt
   const videoSource = getStoryboardVideoSource(sb, generations)
   if (!videoSource) throw new Error(`Storyboard ${storyboardId} has no video`)
   db.update(schema.storyboards)
-    .set({ status: 'compose_processing', composedVideoUrl: null, videoUrl: videoSource.videoUrl, updatedAt: now() })
+    .set({
+      status: 'compose_processing',
+      composedVideoUrl: null,
+      composedVideoGenerationId: null,
+      videoUrl: videoSource.videoUrl,
+      updatedAt: now(),
+    })
     .where(eq(schema.storyboards.id, storyboardId))
     .run()
 
@@ -261,7 +267,12 @@ export async function composeStoryboard(storyboardId: number, options: ComposeSt
     })
 
     const composedRelative = `static/composed/${outputFilename}`
-    db.update(schema.storyboards).set({ composedVideoUrl: composedRelative, status: 'compose_completed', updatedAt: now() })
+    db.update(schema.storyboards).set({
+      composedVideoUrl: composedRelative,
+      composedVideoGenerationId: videoSource.generation?.id ? Number(videoSource.generation.id) : null,
+      status: 'compose_completed',
+      updatedAt: now(),
+    })
       .where(eq(schema.storyboards.id, storyboardId)).run()
 
     logTaskSuccess('ComposeTask', 'storyboard-compose', {
@@ -273,7 +284,7 @@ export async function composeStoryboard(storyboardId: number, options: ComposeSt
     return composedRelative
   } catch (err) {
     db.update(schema.storyboards)
-      .set({ status: 'compose_failed', composedVideoUrl: null, updatedAt: now() })
+      .set({ status: 'compose_failed', composedVideoUrl: null, composedVideoGenerationId: null, updatedAt: now() })
       .where(eq(schema.storyboards.id, storyboardId))
       .run()
     throw err

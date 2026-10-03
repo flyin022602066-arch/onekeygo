@@ -15,7 +15,124 @@ import {
   normalizeVolcAssetUri,
   sanitizeVolcFinalPrompt,
   syncRequiredVolcReferences,
+  prepareMijingVideoReferences,
+  dedupeComfyUiReferenceUrls,
+  assertVideoGenerationMode,
+  assertLocalComfyUiR2VRecord,
+  normalizeLocalComfyUiReferenceMode,
+  assertLocalComfyUiContinuityMode,
+  getVideoPollMaxAttempts,
+  getVideoPollConnectivityFailureLimit,
+  isTerminalSequenceStatus,
+  isAutoDlMiniMaxH3ReferenceUrlError,
+  buildAutoDlInlineReferenceUrls,
 } from '../video-generation.js'
+
+test('serial child polling treats every terminal parent status as non-resumable', () => {
+  for (const status of ['completed', 'failed', 'cancelled', 'CANCELLED']) {
+    assert.equal(isTerminalSequenceStatus(status), true)
+  }
+  for (const status of ['queued', 'running', 'paused', null, undefined]) {
+    assert.equal(isTerminalSequenceStatus(status), false)
+  }
+})
+
+test('local ComfyUI references reserve the continuity frame and remove stale duplicates', () => {
+  assert.deepEqual(
+    dedupeComfyUiReferenceUrls(
+      ['static/tail.png', '/static/tail.png', 'http://localhost:5679/static/tail.png', 'static/scene.png', 'static/scene.png'],
+      'static/tail.png',
+    ),
+    ['static/scene.png'],
+  )
+})
+
+test('local ComfyUI polling has no wall-clock attempt limit while remote providers retain theirs', () => {
+  assert.equal(getVideoPollMaxAttempts('comfyui'), Number.POSITIVE_INFINITY)
+  assert.equal(getVideoPollMaxAttempts('autodl_comfyui'), 1800)
+  assert.equal(getVideoPollMaxAttempts('mijing'), 300)
+  assert.equal(getVideoPollMaxAttempts('grok_openai'), 300)
+})
+
+test('local ComfyUI polling stops after a bounded connectivity outage', () => {
+  assert.equal(getVideoPollConnectivityFailureLimit('comfyui'), 6)
+  assert.equal(getVideoPollConnectivityFailureLimit('autodl_comfyui'), 0)
+  assert.equal(getVideoPollConnectivityFailureLimit('mijing'), 0)
+})
+
+test('local ComfyUI video generation is restricted to serial runs', () => {
+  assert.throws(
+    () => assertVideoGenerationMode({ provider: 'comfyui' }, null),
+    /本地 MiniMax H3 只能通过一键串行生成/,
+  )
+  assert.doesNotThrow(() => assertVideoGenerationMode({ provider: 'comfyui' }, 12))
+  assert.doesNotThrow(() => assertVideoGenerationMode({ provider: 'mijing' }, null))
+})
+
+test('local H3 rejects every legacy frame-slot input before enqueue', () => {
+  const base = { referenceMode: 'multiple', imageUrl: null, firstFrameUrl: null, lastFrameUrl: null, referenceImageUrls: ['scene.png'], prompt: 'ordered picture mapping' }
+  assert.doesNotThrow(() => assertLocalComfyUiR2VRecord(base))
+  for (const field of ['imageUrl', 'firstFrameUrl', 'lastFrameUrl']) {
+    assert.throws(() => assertLocalComfyUiR2VRecord({ ...base, [field]: 'legacy.png' }), /forbids/)
+  }
+  assert.throws(() => assertLocalComfyUiR2VRecord({ ...base, referenceMode: 'first_frame_multiple' }), /requires multi-reference/)
+  assert.throws(() => assertLocalComfyUiR2VRecord({ ...base, prompt: 'previous shot tail frame' }), /disabled frame-slot/)
+})
+
+test('local H3 reference mode is always explicit multi-reference R2V', () => {
+  assert.equal(normalizeLocalComfyUiReferenceMode('multiple'), 'multiple')
+  for (const mode of ['single', 'first_frame_multiple', 'first_last', 'i2v']) {
+    assert.throws(() => normalizeLocalComfyUiReferenceMode(mode), /仅支持多参考 R2V/)
+  }
+})
+
+test('local H3 continuity mode is isolated to standard R2V or Motion Context Plus', () => {
+  assert.doesNotThrow(() => assertLocalComfyUiContinuityMode('standard_r2v'))
+  assert.doesNotThrow(() => assertLocalComfyUiContinuityMode('latent_plus'))
+  assert.throws(() => assertLocalComfyUiContinuityMode('first_last'), /仅支持标准 R2V 或 Motion Context Plus/)
+})
+
+test('local ComfyUI connection and OOM failures have actionable messages', () => {
+  assert.match(formatVideoProviderError('fetch failed'), /Worker 无法连接/)
+  const oom = formatVideoProviderError('CUDA out of memory')
+  assert.match(oom, /百万像素/)
+  assert.doesNotMatch(oom, /低显存模式/)
+})
+
+test('AutoDL MiniMax H3 retries only for invalid reference-image URLs', () => {
+  const url = 'https://autodl.art/api/v1/comfyui/comfyui_workflow/minimax_h3_image_audio_to_video_v2_15s'
+  const body = { prompt: 'shot', ref_image_0: 'https://cdn.example/ref.png' }
+  assert.equal(isAutoDlMiniMaxH3ReferenceUrlError(url, body, 403, 'ref_image_0 URL is invalid: status=403'), true)
+  assert.equal(isAutoDlMiniMaxH3ReferenceUrlError(url, body, 200, '', { code: 'Error', msg: 'ref_image_0 URL forbidden' }), true)
+  assert.equal(isAutoDlMiniMaxH3ReferenceUrlError(url, body, 403, 'authorization forbidden'), false)
+  assert.equal(isAutoDlMiniMaxH3ReferenceUrlError('https://autodl.art/api/v1/comfyui/comfyui_workflow/other-workflow', body, 403, 'ref_image_0 URL is invalid'), false)
+})
+
+test('AutoDL inline reference fallback preserves order and data URLs', async () => {
+  const references = [
+    { url: 'https://cdn.example/one.png', source: 'data:image/png;base64,Zmlyc3Q=' },
+    { url: 'https://cdn.example/two.png', source: 'data:image/jpeg;base64,c2Vjb25k' },
+  ]
+  assert.deepEqual(await buildAutoDlInlineReferenceUrls(references), [
+    'data:image/png;base64,Zmlyc3Q=',
+    'data:image/jpeg;base64,c2Vjb25k',
+  ])
+})
+
+test('prepareMijingVideoReferences uploads first frame and returns Volc Asset URIs', async () => {
+  const calls: string[] = []
+  const prepared = await prepareMijingVideoReferences({
+    id: 91, storyboardId: 31, dramaId: 7, prompt: 'shot', promptIsFinal: false, model: 'seedance',
+    referenceMode: 'first_frame_multiple', imageUrl: null, firstFrameUrl: 'static/first.png', lastFrameUrl: null,
+    referenceImageUrls: JSON.stringify(['static/ref.png']),
+  } as any, async (input) => {
+    calls.push(input.name)
+    return { localAssetId: calls.length, providerAssetId: `asset-${calls.length}`, assetUri: `asset://asset-${calls.length}`, groupName: 'test', publicUrl: `https://cdn/${calls.length}.png` }
+  })
+  assert.deepEqual(calls, ['首帧', '参考图1'])
+  assert.equal(prepared.firstFrameUrl, 'Asset://asset-1')
+  assert.deepEqual(prepared.referenceImageUrls, ['Asset://asset-2'])
+})
 
 test('video final prompt replaces stale style locks with the project style', () => {
   const prompt = applyVideoVisualStyleLock(
@@ -165,6 +282,7 @@ test('preparePublicVideoReferenceRecord uploads storyboard, character, and scene
     {
       sceneImages: [{ name: '公司办公区', url: 'static/images/scene.png' }],
       characterImages: [{ name: '陈风', url: 'static/images/chenfeng.png' }],
+      propImages: [{ name: '黑色箭矢', url: 'static/images/arrow.png' }],
     },
     async (url, name) => {
       calls.push(`${name}:${url}`)
@@ -178,18 +296,21 @@ test('preparePublicVideoReferenceRecord uploads storyboard, character, and scene
     'https://d.uguu.se/视频任务81-参考图2.png',
     'https://d.uguu.se/场景-公司办公区.png',
     'https://d.uguu.se/角色-陈风.png',
+    'https://d.uguu.se/道具-黑色箭矢.png',
   ])
   assert.deepEqual(calls, [
     '视频任务81-参考图1:static/grid-cells/shot-1.png',
     '视频任务81-参考图2:static/grid-cells/shot-2.png',
     '场景-公司办公区:static/images/scene.png',
     '角色-陈风:static/images/chenfeng.png',
+    '道具-黑色箭矢:static/images/arrow.png',
   ])
   assert.equal(prepared.imageUrl, null)
   assert.equal(prepared.firstFrameUrl, null)
   assert.equal(prepared.lastFrameUrl, null)
   assert.match(prepared.prompt, /Eggfans\/Grok 视频参考图：/)
   assert.match(prepared.prompt, /角色-陈风=https:\/\/d\.uguu\.se\/角色-陈风\.png/)
+  assert.match(prepared.prompt, /道具-黑色箭矢=https:\/\/d\.uguu\.se\/道具-黑色箭矢\.png/)
   assert.doesNotMatch(prepared.prompt, /@asset:\/\//)
   assert.doesNotMatch(JSON.stringify(prepared.referenceImageUrls), /static\/|data:image/)
 })
@@ -841,6 +962,12 @@ test('formatVideoProviderError preserves Volc policy failure details', () => {
     }),
     '火山视频生成失败：输出视频触发平台审核/版权策略限制（OutputVideoSensitiveContentDetected.PolicyViolation）。The request failed because the output video may be related to copyright restrictions. Request id: abc',
   )
+})
+
+test('formatVideoProviderError turns local ComfyUI OOM into an actionable message', () => {
+  const message = formatVideoProviderError('torch.OutOfMemoryError: CUDA out of memory')
+  assert.match(message, /显存不足/)
+  assert.match(message, /关闭其他占显存程序/)
 })
 
 test('isResumableVideoGeneration only resumes async video tasks that still need polling', () => {

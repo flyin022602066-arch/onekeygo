@@ -70,3 +70,20 @@ test('video generations are grouped by storyboard id', () => {
   assert.deepEqual(grouped.get(2)?.map(item => item.id), [3])
   assert.equal(grouped.has(0), false)
 })
+
+test('local H3 source rejects legacy image_url and rows without explicit mode', () => {
+  const storyboard = { id: 10, videoUrl: 'static/videos/legacy.mp4' }
+  const valid = {
+    id: 20,
+    storyboardId: 10,
+    provider: 'comfyui',
+    status: 'completed',
+    localPath: 'static/videos/current.mp4',
+    referenceMode: 'multiple',
+    continuityMode: 'standard_r2v',
+    prompt: 'ordered R2V picture mapping',
+  }
+  assert.equal(getStoryboardVideoSource(storyboard, [{ ...valid, imageUrl: 'legacy.png' }]), null)
+  assert.equal(getStoryboardVideoSource(storyboard, [{ ...valid, continuityMode: null }]), null)
+  assert.equal(getStoryboardVideoSource(storyboard, [valid])?.videoUrl, 'static/videos/current.mp4')
+})

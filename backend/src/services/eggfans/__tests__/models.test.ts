@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  EGGFANS_PRICING_URL,
+  clearEggfansModelCache,
+  getEggfansModels,
   normalizeEggfansCatalog,
   filterEggfansModels,
   type EggfansPricingResponse,
@@ -109,6 +112,18 @@ const sample: EggfansPricingResponse = {
   ],
 }
 
+test('getEggfansModels loads the current Eggfans .org pricing endpoint', async () => {
+  clearEggfansModelCache()
+  let requestedUrl = ''
+  const response = new Response(JSON.stringify({ data: [] }), { status: 200 })
+  await getEggfansModels(async (input) => {
+    requestedUrl = String(input)
+    return response
+  })
+  assert.match(requestedUrl, new RegExp(`^${EGGFANS_PRICING_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\?_=`))
+  assert.equal(EGGFANS_PRICING_URL, 'https://api.eggfans.org/api/pricing_new')
+})
+
 test('normalizeEggfansCatalog keeps endpoint metadata and derives service types', () => {
   const models = normalizeEggfansCatalog(sample)
 
@@ -170,4 +185,13 @@ test('normalizeEggfansCatalog routes gpt-image-2-c to the image edits endpoint',
   assert.equal(models[0].routeFamily, 'openai-image')
   assert.equal(models[0].endpointPath, '/v1/images/edits')
   assert.equal(models[0].endpointMethod, 'POST')
+})
+
+test('normalizeEggfansCatalog recognizes live Chinese labels for GPT-5.6', () => {
+  const models = normalizeEggfansCatalog({
+    supported_endpoint: { openai: { path: '/v1/chat/completions', method: 'POST' } },
+    data: [{ model_name: 'gpt-5.6-sol', model_type: '对话', tags: '对话,工具,识图,思考', supported_endpoint_types: ['openai'] }],
+  })
+  assert.equal(models[0]?.serviceType, 'text')
+  assert.equal(models[0]?.routeFamily, 'openai-chat')
 })

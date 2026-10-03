@@ -28,7 +28,7 @@ type LoadConfigOptions = {
   env?: Record<string, string | undefined>
 }
 
-const DEFAULT_CORS_ORIGINS = ['http://localhost:3013', 'http://localhost:5679']
+const DEFAULT_CORS_ORIGINS = ['http://localhost:3013', 'http://localhost:45679']
 
 export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
   const projectRoot = options.projectRoot || DEFAULT_PROJECT_ROOT
@@ -39,7 +39,7 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
   const yamlServer = asRecord(rawConfig.server)
   const yamlDatabase = asRecord(rawConfig.database)
   const yamlStorage = asRecord(rawConfig.storage)
-  const port = numberFrom(env.PORT, yamlServer.port, 5679)
+  const port = numberFrom(env.PORT, yamlServer.port, 45679)
   const host = stringFrom(env.HOST, yamlServer.host, '0.0.0.0')
   const corsOrigins = listFrom(env.CORS_ORIGINS, yamlServer.cors_origins, DEFAULT_CORS_ORIGINS)
   const dbPath = resolveProjectPath(projectRoot, stringFrom(env.DB_PATH, yamlDatabase.path, './data/eggfans_drama.db'))

@@ -1,6 +1,6 @@
 {
   "name": "onekeygo",
-  "version": "2.0.0",
+  "version": "2.0.99",
   "private": true,
   "scripts": {
     "setup": "npm ci --prefix backend && npm ci --prefix frontend && npm ci --prefix desktop",

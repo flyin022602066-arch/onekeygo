@@ -1,27 +1,78 @@
 import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
-import { success, badRequest, now } from '../utils/response.js'
+import { success, created, badRequest, now } from '../utils/response.js'
 import { generateVoiceSample } from '../services/tts-generation.js'
 import { generateImage } from '../services/image-generation.js'
 import { buildCharacterDesignPrompt } from '../services/character-image-prompt.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
 import { resolveGenerationConfigId } from './generationConfig.js'
 import { isTkOverseasMode } from '../services/overseas-visual.js'
-import { saveUploadedFileWithExtension } from '../utils/storage.js'
+import { saveUploadedAssetImage } from '../utils/storage.js'
 import { validateImageUpload } from '../utils/upload-validation.js'
+import { serializeAssetAliases } from '../services/asset-aliases.js'
 
 const app = new Hono()
+
+// POST /characters/upload-image - create an episode-linked character from a local image
+app.post('/upload-image', async (c) => {
+  const body = await c.req.parseBody()
+  const name = String(body.name || '').trim()
+  const dramaId = Number(body.drama_id || body.dramaId)
+  const episodeId = Number(body.episode_id || body.episodeId)
+  const file = body.file
+  if (!name) return badRequest(c, '请输入角色名称')
+  if (!Number.isInteger(dramaId) || dramaId <= 0 || !Number.isInteger(episodeId) || episodeId <= 0) {
+    return badRequest(c, 'drama_id and episode_id are required')
+  }
+  const [episode] = db.select().from(schema.episodes).where(eq(schema.episodes.id, episodeId)).all()
+  if (!episode || episode.deletedAt || episode.dramaId !== dramaId) return badRequest(c, 'Episode not found')
+  if (!file || !(file instanceof File)) return badRequest(c, '请选择角色图片')
+
+  const buffer = await file.arrayBuffer()
+  const validation = validateImageUpload({ name: file.name, type: file.type, size: file.size, data: buffer })
+  if (!validation.ok) return badRequest(c, validation.message)
+
+  const imagePath = await saveUploadedAssetImage(buffer, 'characters')
+  const ts = now()
+  const result = db.insert(schema.characters).values({
+    dramaId,
+    name,
+    aliases: serializeAssetAliases(name, body.aliases, body.alias, body.english_name, body.englishName),
+    role: String(body.role || '角色').trim() || '角色',
+    description: String(body.description || '').trim(),
+    appearance: String(body.appearance || '').trim(),
+    personality: String(body.personality || '').trim(),
+    imageUrl: imagePath,
+    localPath: imagePath,
+    createdAt: ts,
+    updatedAt: ts,
+  }).run()
+  const characterId = Number(result.lastInsertRowid)
+  db.insert(schema.episodeCharacters).values({ episodeId, characterId, createdAt: ts }).run()
+  const [character] = db.select().from(schema.characters).where(eq(schema.characters.id, characterId)).all()
+  logTaskSuccess('CharacterImage', 'manual-create-upload', { characterId, episodeId, path: imagePath })
+  return created(c, character)
+})
 
 // PUT /characters/:id
 app.put('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   const body = await c.req.json()
   const updates: Record<string, any> = { updatedAt: now() }
-  for (const key of ['name', 'role', 'description', 'appearance', 'personality', 'voiceStyle', 'voiceProvider', 'imageUrl', 'localPath']) {
+  for (const key of ['name', 'aliases', 'role', 'description', 'appearance', 'personality', 'voiceStyle', 'voiceProvider', 'imageUrl', 'localPath']) {
     const snakeKey = key.replace(/[A-Z]/g, m => '_' + m.toLowerCase())
     if (snakeKey in body) updates[key] = body[snakeKey]
     else if (key in body) updates[key] = body[key]
+  }
+  if ('aliases' in body || 'alias' in body || 'english_name' in body || 'englishName' in body) {
+    const [current] = db.select().from(schema.characters).where(eq(schema.characters.id, id)).all()
+    if (current) updates.aliases = serializeAssetAliases(
+      body.name ?? current.name,
+      body.aliases ?? body.alias,
+      body.english_name ?? body.englishName,
+      current.aliases,
+    )
   }
   if ('voice_style' in body || 'voiceStyle' in body) {
     updates.voiceSampleUrl = null
@@ -55,7 +106,7 @@ app.post('/:id/upload-image', async (c) => {
   })
   if (!validation.ok) return badRequest(c, validation.message)
 
-  const imagePath = await saveUploadedFileWithExtension(buffer, 'characters', validation.extension)
+  const imagePath = await saveUploadedAssetImage(buffer, 'characters')
   db.update(schema.characters).set({
     imageUrl: imagePath,
     localPath: imagePath,

@@ -15,6 +15,8 @@ import { logTaskError, logTaskProgress, logTaskStart, logTaskSuccess } from '../
 import {
   getStoryboardVideoSource,
   groupVideoGenerationsByStoryboard,
+  isCompletedVideoGeneration,
+  pickLatestVideoGeneration,
   type VideoGenerationCandidate,
 } from './storyboard-video-source.js'
 import { FFMPEG_BINARY, FFPROBE_BINARY } from './media-tools.js'
@@ -52,6 +54,118 @@ export type SerialMergeRunCandidate = {
 export type SerialMergePlan = {
   runId: number
   trimLastFrameIndexes: number[]
+}
+
+/**
+ * The merge row stores the exact composed clip URLs used for the concat job.
+ * Keeping this snapshot makes it possible to reject/export no stale merge
+ * after a storyboard has been re-composed or a newer video was generated.
+ */
+export type MergeSnapshotEntry = {
+  storyboardId: number
+  composedVideoUrl: string
+  videoGenerationId: number | null
+}
+
+type ComposedStoryboardCandidate = {
+  id?: number | null
+  composedVideoUrl?: string | null
+  composedVideoGenerationId?: number | null
+}
+
+function isStoryboardComposedCurrent(
+  storyboard: ComposedStoryboardCandidate,
+  generations: VideoGenerationCandidate[] = [],
+) {
+  if (!String(storyboard.composedVideoUrl || '').trim()) return false
+  const latest = pickLatestVideoGeneration(generations, storyboard.id)
+  if (!latest) return true // legacy/manual clips without a generation row
+  if (!isCompletedVideoGeneration(latest)) return false
+  // A generation row exists, so a composition without provenance cannot be
+  // proven to use the latest clip. It must be composed again.
+  if (!Number(storyboard.composedVideoGenerationId || 0)) return false
+  return Number(storyboard.composedVideoGenerationId || 0) === Number(latest.id || 0)
+}
+
+type MergeRecordCandidate = {
+  status?: string | null
+  mergedUrl?: string | null
+  scenes?: string | null
+}
+
+/** Prevent an async merge worker from publishing output after its inputs or a
+ * newer merge request have changed. */
+export function isMergeJobCurrent(
+  mergeId: number,
+  latestMergeId: number | null | undefined,
+  merge: MergeRecordCandidate,
+  storyboards: ComposedStoryboardCandidate[],
+  generations: VideoGenerationCandidate[] = [],
+) {
+  return Number(latestMergeId || 0) === Number(mergeId) && isMergeCurrent(merge, storyboards, generations)
+}
+
+export function buildMergeSnapshot(
+  storyboards: ComposedStoryboardCandidate[],
+  generations: VideoGenerationCandidate[] = [],
+): MergeSnapshotEntry[] {
+  const grouped = groupVideoGenerationsByStoryboard(generations)
+  return storyboards
+    .map((storyboard) => {
+      const composedVideoUrl = String(storyboard.composedVideoUrl || '').trim()
+      if (!composedVideoUrl) return null
+      const latest = getStoryboardVideoSource(
+        storyboard,
+        grouped.get(Number(storyboard.id || 0)) || [],
+      )?.generation
+      return {
+        storyboardId: Number(storyboard.id || 0),
+        composedVideoUrl,
+        videoGenerationId: latest?.id ? Number(latest.id) : null,
+      }
+    })
+    .filter((item): item is MergeSnapshotEntry => !!item && item.storyboardId > 0)
+}
+
+function parseMergeSnapshot(scenes: string | null | undefined): Array<Partial<MergeSnapshotEntry> | string> | null {
+  try {
+    const parsed = JSON.parse(String(scenes || ''))
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A completed merge is exportable only while it still describes the current
+ * composed storyboard clips. Older releases stored `scenes` as a string URL
+ * array, so those snapshots remain supported as a URL-only comparison.
+ */
+export function isMergeCurrent(
+  merge: MergeRecordCandidate | null | undefined,
+  storyboards: ComposedStoryboardCandidate[],
+  generations: VideoGenerationCandidate[] = [],
+) {
+  if (!merge || String(merge.status || '').toLowerCase() !== 'completed' || !String(merge.mergedUrl || '').trim()) {
+    return false
+  }
+  const expected = buildMergeSnapshot(storyboards, generations)
+  if (!expected.length) return false
+  if (storyboards.some(storyboard => !isStoryboardComposedCurrent(storyboard, generations))) return false
+  const actual = parseMergeSnapshot(merge.scenes)
+  if (!actual || actual.length !== expected.length) return false
+
+  return actual.every((entry, index) => {
+    const current = expected[index]
+    // URL-only snapshots are from pre-provenance releases. They are safe only
+    // for storyboards that have no generation record at all.
+    if (typeof entry === 'string') return !current.videoGenerationId && entry === current.composedVideoUrl
+    if (String(entry?.composedVideoUrl || '') !== current.composedVideoUrl) return false
+    const generationId = entry?.videoGenerationId
+    return generationId == null
+      ? !current.videoGenerationId
+      : Number(generationId) === current.videoGenerationId
+  })
 }
 
 export function resolveSerialMergePlan(
@@ -320,11 +434,11 @@ function runMerge(listPath: string, outputPath: string, outputOptions: string[])
 
 /** Empty legacy placeholders do not belong to the merge set. */
 export function selectMergeCandidates(
-  storyboards: Array<{ id?: number | null; videoUrl?: string | null; composedVideoUrl?: string | null }>,
+  storyboards: Array<{ id?: number | null; videoUrl?: string | null; composedVideoUrl?: string | null; composedVideoGenerationId?: number | null; deletedAt?: string | null }>,
   generations: VideoGenerationCandidate[] = [],
 ) {
   const grouped = groupVideoGenerationsByStoryboard(generations)
-  return storyboards.filter((storyboard) => (
+  return storyboards.filter((storyboard) => !storyboard.deletedAt && (
     !!String(storyboard.composedVideoUrl || '').trim()
     || !!getStoryboardVideoSource(storyboard, grouped.get(Number(storyboard.id || 0)) || [])
   ))
@@ -338,10 +452,14 @@ export async function mergeEpisodeVideos(episodeId: number, dramaId: number): Pr
     .where(eq(schema.storyboards.episodeId, episodeId))
     .orderBy(schema.storyboards.storyboardNumber)
     .all()
+    .filter(item => !item.deletedAt)
 
   const videoGenerations = db.select().from(schema.videoGenerations).all()
   const mergeCandidates = selectMergeCandidates(storyboards, videoGenerations)
-  const composedStoryboards = mergeCandidates.filter(sb => !!String(sb.composedVideoUrl || '').trim())
+  const composedStoryboards = mergeCandidates.filter(sb => isStoryboardComposedCurrent(
+    sb,
+    videoGenerations.filter(generation => Number(generation.storyboardId || 0) === Number(sb.id || 0)),
+  ))
   if (composedStoryboards.length !== mergeCandidates.length) {
     throw new Error(`Only composed storyboards can be merged (${composedStoryboards.length}/${mergeCandidates.length} ready)`)
   }
@@ -362,6 +480,11 @@ export async function mergeEpisodeVideos(episodeId: number, dramaId: number): Pr
 
   // 创建 merge 记录
   const ts = now()
+  db.update(schema.videoMerges)
+    .set({ status: 'stale', mergedUrl: null, errorMsg: 'Replaced by a newer merge job' })
+    .where(eq(schema.videoMerges.episodeId, episodeId))
+    .run()
+  const mergeSnapshot = JSON.stringify(buildMergeSnapshot(composedStoryboards, videoGenerations))
   const res = db.insert(schema.videoMerges).values({
     episodeId,
     dramaId,
@@ -369,24 +492,36 @@ export async function mergeEpisodeVideos(episodeId: number, dramaId: number): Pr
     provider: 'ffmpeg',
     model: serialMergePlan ? 'ffmpeg-concat-h264-aac-serial-trim-last-frame' : 'ffmpeg-concat-h264-aac',
     status: 'processing',
-    scenes: JSON.stringify(videos),
+    scenes: mergeSnapshot,
     createdAt: ts,
   }).run()
   const mergeId = Number(res.lastInsertRowid)
 
+  // The previous episode-level URL is no longer current as soon as a new
+  // concat job is queued. It is replaced only after this merge completes.
+  db.update(schema.episodes)
+    .set({ videoUrl: null, updatedAt: ts })
+    .where(eq(schema.episodes.id, episodeId)).run()
+
   // 异步执行
-  doMerge(mergeId, episodeId, videos, serialMergePlan).catch(err => {
+  doMerge(mergeId, episodeId, videos, serialMergePlan, mergeSnapshot).catch(err => {
     logTaskError('MergeTask', 'episode-merge', { mergeId, episodeId, error: err.message })
     console.error(`[Merge] Failed:`, err)
-    db.update(schema.videoMerges)
-      .set({ status: 'failed', errorMsg: err.message })
-      .where(eq(schema.videoMerges.id, mergeId)).run()
+    const [merge] = db.select().from(schema.videoMerges)
+      .where(eq(schema.videoMerges.id, mergeId)).all()
+    // A superseded worker must not turn its intentionally stale record into a
+    // visible failure after a newer merge has already been queued.
+    if (String(merge?.status || '').toLowerCase() === 'processing') {
+      db.update(schema.videoMerges)
+        .set({ status: 'failed', errorMsg: err.message })
+        .where(eq(schema.videoMerges.id, mergeId)).run()
+    }
   })
 
   return mergeId
 }
 
-async function doMerge(mergeId: number, episodeId: number, videos: string[], serialMergePlan?: SerialMergePlan | null) {
+async function doMerge(mergeId: number, episodeId: number, videos: string[], serialMergePlan?: SerialMergePlan | null, mergeSnapshot?: string) {
   // 生成 concat 列表文件
   const listDir = path.join(STORAGE_ROOT, 'temp')
   fs.mkdirSync(listDir, { recursive: true })
@@ -431,6 +566,27 @@ async function doMerge(mergeId: number, episodeId: number, videos: string[], ser
   const duration = await getVideoDuration(outputPath)
 
   const mergedRelative = `static/merged/${outputFilename}`
+  const currentStoryboards = db.select().from(schema.storyboards)
+    .where(eq(schema.storyboards.episodeId, episodeId))
+    .orderBy(schema.storyboards.storyboardNumber)
+    .all()
+    .filter(item => !item.deletedAt)
+  const storyboardIds = new Set(currentStoryboards.map(item => item.id))
+  const currentGenerations = db.select().from(schema.videoGenerations).all()
+    .filter(item => !item.deletedAt && item.storyboardId && storyboardIds.has(item.storyboardId))
+  const latestMerge = db.select().from(schema.videoMerges)
+    .where(eq(schema.videoMerges.episodeId, episodeId))
+    .all()
+    .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0]
+  const candidate = { status: 'completed', mergedUrl: mergedRelative, scenes: mergeSnapshot }
+  if (!isMergeJobCurrent(mergeId, latestMerge?.id, candidate, currentStoryboards, currentGenerations)) {
+    db.update(schema.videoMerges)
+      .set({ status: 'stale', mergedUrl: null, errorMsg: '镜头或合并任务已更新，已丢弃旧拼接结果' })
+      .where(eq(schema.videoMerges.id, mergeId)).run()
+    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch {}
+    logTaskProgress('MergeTask', 'discard-stale-output', { mergeId, episodeId })
+    return
+  }
 
   // 更新 merge 记录
   db.update(schema.videoMerges)

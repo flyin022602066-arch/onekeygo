@@ -12,6 +12,7 @@ import { withVisualStyleLock } from '../services/visual-style.js'
 import { resolveGenerationConfigId } from './generationConfig.js'
 import { buildCharacterDesignPrompt } from '../services/character-image-prompt.js'
 import { buildSceneAssetPrompt } from '../services/scene-image-prompt.js'
+import { buildPropAssetPrompt } from '../services/prop-image-prompt.js'
 import { isTkOverseasMode } from '../services/overseas-visual.js'
 
 const app = new Hono()
@@ -79,6 +80,7 @@ app.post('/', async (c) => {
       storyboardId: body.storyboard_id,
       sceneId: body.scene_id,
       characterId: body.character_id,
+      propId: body.prop_id,
       dramaId: resolvedDramaId,
       frameType: body.frame_type,
     })
@@ -92,6 +94,7 @@ app.post('/', async (c) => {
       dramaId: body.drama_id,
       sceneId: body.scene_id,
       characterId: body.character_id,
+      propId: body.prop_id,
       prompt,
       model: body.model,
       size: body.size,
@@ -127,7 +130,7 @@ app.post('/:id/retry', async (c) => {
       ? db.select().from(schema.episodes).where(eq(schema.episodes.id, Number(body.episode_id || body.episodeId))).all()[0]
       : storyboard
       ? db.select().from(schema.episodes).where(eq(schema.episodes.id, storyboard.episodeId)).all()[0]
-      : record.sceneId || record.characterId
+      : record.sceneId || record.characterId || record.propId
         ? db.select().from(schema.episodes).all().find(item => item.dramaId === record.dramaId)
         : undefined
     const [drama] = record.dramaId
@@ -147,6 +150,7 @@ app.post('/:id/retry', async (c) => {
       dramaId: record.dramaId || undefined,
       sceneId: record.sceneId || undefined,
       characterId: record.characterId || undefined,
+      propId: record.propId || undefined,
       prompt: current.prompt,
       model: retrySelection.model,
       size: body?.size || record.size || undefined,
@@ -253,6 +257,16 @@ async function rebuildCurrentImageRetryInput(
           style: drama?.style,
           breakdownMode: isTkOverseasMode(episode?.breakdownMode) ? 'tk_overseas' : null,
         }),
+        referenceImages: [],
+      }
+    }
+  }
+
+  if (record.propId) {
+    const [prop] = db.select().from(schema.props).where(eq(schema.props.id, record.propId)).all()
+    if (prop) {
+      return {
+        prompt: withVisualStyleLock(buildPropAssetPrompt(prop), drama?.style, '道具资产图'),
         referenceImages: [],
       }
     }

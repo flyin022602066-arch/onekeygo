@@ -8,6 +8,9 @@ import {
   metadataHasAudio,
   parseFrameRate,
   resolveSerialMergePlan,
+  buildMergeSnapshot,
+  isMergeCurrent,
+  isMergeJobCurrent,
   selectMergeCandidates,
 } from '../ffmpeg-merge.js'
 
@@ -124,4 +127,53 @@ test('ordinary or mixed merge candidates do not activate serial末帧裁剪', ()
   const generations = [{ id: 101, storyboardId: 1, status: 'completed', localPath: 'static/videos/1.mp4' }]
   const steps = [{ runId: 77, storyboardId: 1, stepIndex: 0, videoGenerationId: 101 }]
   assert.equal(resolveSerialMergePlan(storyboards, generations, steps, [{ id: 77, totalCount: 2 }]), null)
+})
+
+test('merge snapshot records the generation used by each composed storyboard', () => {
+  const storyboards = [{ id: 1, composedVideoUrl: 'static/composed/shot-1.mp4', composedVideoGenerationId: 22 }]
+  const generations = [{ id: 22, storyboardId: 1, status: 'completed', localPath: 'static/videos/shot-1.mp4' }]
+  assert.deepEqual(buildMergeSnapshot(storyboards, generations), [{
+    storyboardId: 1,
+    composedVideoUrl: 'static/composed/shot-1.mp4',
+    videoGenerationId: 22,
+  }])
+})
+
+test('merge is stale when a storyboard has been regenerated', () => {
+  const storyboards = [{ id: 1, composedVideoUrl: 'static/composed/new.mp4', composedVideoGenerationId: 22 }]
+  const generations = [
+    { id: 21, storyboardId: 1, status: 'completed', localPath: 'static/videos/old.mp4' },
+    { id: 22, storyboardId: 1, status: 'completed', localPath: 'static/videos/new.mp4' },
+  ]
+  const current = {
+    status: 'completed',
+    mergedUrl: 'static/merged/current.mp4',
+    scenes: JSON.stringify(buildMergeSnapshot(storyboards, generations)),
+  }
+  assert.equal(isMergeCurrent(current, storyboards, generations), true)
+
+  const regenerated = [{ id: 23, storyboardId: 1, status: 'completed', localPath: 'static/videos/latest.mp4' }]
+  assert.equal(isMergeCurrent(current, storyboards, regenerated), false)
+})
+
+test('legacy URL-only merge snapshots are rejected when generation provenance exists', () => {
+  const storyboards = [{ id: 1, composedVideoUrl: 'static/composed/shot-1.mp4', composedVideoGenerationId: 22 }]
+  const generations = [{ id: 22, storyboardId: 1, status: 'completed', localPath: 'static/videos/shot-1.mp4' }]
+  assert.equal(isMergeCurrent({
+    status: 'completed',
+    mergedUrl: 'static/merged/old.mp4',
+    scenes: JSON.stringify(['static/composed/shot-1.mp4']),
+  }, storyboards, generations), false)
+})
+
+test('stale merge workers cannot publish after a newer merge is queued', () => {
+  const storyboards = [{ id: 1, composedVideoUrl: 'static/composed/shot-1.mp4', composedVideoGenerationId: 22 }]
+  const generations = [{ id: 22, storyboardId: 1, status: 'completed', localPath: 'static/videos/shot-1.mp4' }]
+  const merge = {
+    status: 'completed',
+    mergedUrl: 'static/merged/new.mp4',
+    scenes: JSON.stringify(buildMergeSnapshot(storyboards, generations)),
+  }
+  assert.equal(isMergeJobCurrent(5, 6, merge, storyboards, generations), false)
+  assert.equal(isMergeJobCurrent(6, 6, merge, storyboards, generations), true)
 })

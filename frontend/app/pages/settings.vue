@@ -32,12 +32,12 @@
         <div class="settings-head">
           <div class="settings-brand">
             <div class="settings-brand-mark">
-              <img v-if="showBrandImage" :src="brandLogo" alt="谜镜" class="settings-brand-logo" @error="showBrandImage = false" />
-              <span v-else class="settings-brand-fallback">谜</span>
+              <img v-if="showBrandImage" :src="brandLogo" alt="eggfans" class="settings-brand-logo" @error="showBrandImage = false" />
+              <span v-else class="settings-brand-fallback">e</span>
             </div>
             <div class="settings-brand-copy">
-              <div class="settings-brand-kicker">谜镜 Studio</div>
-              <div class="settings-brand-name">谜镜</div>
+              <div class="settings-brand-kicker">eggfans Studio</div>
+              <div class="settings-brand-name">eggfans</div>
             </div>
           </div>
           <h2 class="settings-title">AI 服务配置</h2>
@@ -65,7 +65,7 @@
           <div class="setup-panel-head compact">
             <div>
               <div class="setup-title">火山素材上传 Key</div>
-              <div class="setup-desc">Seedance 2.0 官方视频会先把角色图、场景图、首尾帧上传到火山素材库，再用 @资产ID 作为参考。</div>
+              <div class="setup-desc">Seedance 2.0 官方视频会先把角色图、场景图和参考图上传到火山素材库，再用 @资产ID 作为参考。</div>
             </div>
             <span :class="['tag', assetUploadConfig?.has_api_key ? 'tag-success' : 'tag-error']">
               {{ assetUploadConfig?.has_api_key ? `已配置 ${assetUploadConfig.api_key_hint || ''}` : '未配置' }}
@@ -136,7 +136,8 @@
               <button class="btn btn-ghost btn-sm ml-auto" @click="startAddCfg(st.type)"><Plus :size="13" /> 添加</button>
             </div>
             <div class="config-list">
-              <div v-for="c in byType(st.type)" :key="c.id" class="card config-row">
+              <div v-for="c in byType(st.type)" :key="c.id" class="card config-row-wrap">
+                <div class="config-row">
                 <div class="config-info">
                   <div class="config-main">
                     <div class="config-line">
@@ -148,10 +149,21 @@
                   </div>
                 </div>
                 <span :class="['tag', c.has_api_key ? 'tag-success' : 'tag-error']">{{ c.has_api_key ? `已配置 ${c.api_key_hint || ''}` : '无密钥' }}</span>
-                <button class="btn btn-ghost btn-sm" @click="testExistingCfg(c)">测试</button>
+                <button class="btn btn-ghost btn-sm" :disabled="cfgTestingId === c.id" @click="testExistingCfg(c)">
+                  <Loader2 v-if="cfgTestingId === c.id" :size="12" class="animate-spin" />
+                  <span v-else>测试</span>
+                </button>
                 <label class="toggle"><input type="checkbox" :checked="c.is_active" @change="toggleCfg(c)"><span /></label>
                 <button class="btn btn-ghost btn-icon" @click="startEditCfg(c)"><Pencil :size="13" /></button>
                 <button class="btn btn-ghost btn-icon" @click="delCfg(c.id)"><Trash2 :size="13" /></button>
+                </div>
+                <div v-if="cfgListTestResults[c.id]" class="test-result compact config-test-result" :class="{ ok: cfgListTestResults[c.id].reachable, bad: !cfgListTestResults[c.id].reachable }">
+                  <div class="test-result-head">
+                    <span class="tag" :class="cfgListTestResults[c.id].reachable ? 'tag-success' : 'tag-error'">{{ cfgListTestResults[c.id].status || 'ERROR' }}</span>
+                    <span>{{ cfgListTestResults[c.id].message }}</span>
+                  </div>
+                  <div class="mono test-result-url">{{ cfgListTestResults[c.id].method }} {{ cfgListTestResults[c.id].url }}</div>
+                </div>
               </div>
               <p v-if="!byType(st.type).length" class="config-empty">暂无配置</p>
             </div>
@@ -164,12 +176,12 @@
         <div class="settings-head">
           <div class="settings-brand">
             <div class="settings-brand-mark">
-              <img v-if="showBrandImage" :src="brandLogo" alt="谜镜" class="settings-brand-logo" @error="showBrandImage = false" />
-              <span v-else class="settings-brand-fallback">谜</span>
+              <img v-if="showBrandImage" :src="brandLogo" alt="eggfans" class="settings-brand-logo" @error="showBrandImage = false" />
+              <span v-else class="settings-brand-fallback">e</span>
             </div>
             <div class="settings-brand-copy">
-              <div class="settings-brand-kicker">谜镜 Studio</div>
-              <div class="settings-brand-name">谜镜</div>
+              <div class="settings-brand-kicker">eggfans Studio</div>
+              <div class="settings-brand-name">eggfans</div>
             </div>
           </div>
           <h2 class="settings-title">Agent 配置</h2>
@@ -244,12 +256,12 @@
           <div class="settings-head">
             <div class="settings-brand">
               <div class="settings-brand-mark">
-                <img v-if="showBrandImage" :src="brandLogo" alt="谜镜" class="settings-brand-logo" @error="showBrandImage = false" />
-                <span v-else class="settings-brand-fallback">谜</span>
+                <img v-if="showBrandImage" :src="brandLogo" alt="eggfans" class="settings-brand-logo" @error="showBrandImage = false" />
+                <span v-else class="settings-brand-fallback">e</span>
               </div>
               <div class="settings-brand-copy">
-                <div class="settings-brand-kicker">谜镜 Studio</div>
-                <div class="settings-brand-name">谜镜</div>
+                <div class="settings-brand-kicker">eggfans Studio</div>
+                <div class="settings-brand-name">eggfans</div>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:10px">
@@ -356,6 +368,50 @@
           <span class="dim">实际端点前缀：</span>
           <span class="mono">{{ endpointHint }}</span>
         </div>
+        <div v-if="cfgForm.provider === 'comfyui' && cfgForm.service_type === 'video'" class="provider-extra-fields">
+          <label class="field">
+            <span class="field-label">本地 H3 潜空间放大二采（实验性，默认关闭）</span>
+            <span><input v-model="cfgForm.settings.comfyui.refinement.enabled" type="checkbox" /> 启用保守高清精修</span>
+          </label>
+          <div v-if="cfgForm.settings.comfyui.refinement.enabled" class="field-row">
+            <label class="field"><span class="field-label">放大倍率</span><input v-model.number="cfgForm.settings.comfyui.refinement.scale" class="input" type="number" min="1.05" max="1.25" step="0.05" /></label>
+            <label class="field"><span class="field-label">二采步数</span><input v-model.number="cfgForm.settings.comfyui.refinement.steps" class="input" type="number" min="1" max="4" /></label>
+            <label class="field"><span class="field-label">去噪强度</span><input v-model.number="cfgForm.settings.comfyui.refinement.denoise" class="input" type="number" min="0.1" max="0.3" step="0.05" /></label>
+          </div>
+          <div class="field-hint">仅本机通道：CPU 逐帧 latent 插值 + Euler/simple 低噪声二采，不是神经超分。建议基础 0.5MP、5 秒；最高 1.25 倍、目标不超过 1MP、采样时长约 6 秒。按高清尺寸重建本镜参考资产并同步续拍条件，保留原对白音轨。先独立保存原片，再检查显存与参考 token 预算、分块解码；节点缺失、预算超限或二采异常保留普通输出。不改变原采样步数、LoRA、串行模式和其他通道。显存预检不能保证绝不 OOM。</div>
+        </div>
+        <div v-if="cfgForm.provider === 'autodl_comfyui'" class="provider-extra-fields">
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">AutoDL workflow_id</span>
+              <input v-model="cfgForm.settings.autodlComfyui.workflowId" class="input" placeholder="minimax_h3_image_audio_to_video_v2_15s" />
+            </label>
+            <label class="field">
+              <span class="field-label">默认时长（秒）</span>
+              <input v-model.number="cfgForm.settings.autodlComfyui.duration" class="input" type="number" min="1" max="15" />
+            </label>
+          </div>
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">分辨率</span>
+              <input v-model="cfgForm.settings.autodlComfyui.resolution" class="input" placeholder="480p竖 / 480p横" />
+            </label>
+            <label class="field">
+              <span class="field-label">参考图字段名</span>
+              <input v-model="cfgForm.settings.autodlComfyui.referenceImagesField" class="input" placeholder="reference_images（按工作流抽屉入参填写）" />
+            </label>
+          </div>
+          <label class="field">
+            <span class="field-label">参考图格式</span>
+            <BaseSelect v-model="cfgForm.settings.autodlComfyui.referenceImageFormat" :options="[{ label: '数组（URL 字符串）', value: 'array' }, { label: '对象数组（{ url }）', value: 'object' }, { label: 'JSON 字符串', value: 'json' }]" />
+            <span class="field-hint">当前 MiniMax H3 工作流固定使用 ref_image_0 至 ref_image_8；音频使用 ref_audio_0 至 ref_audio_2。</span>
+          </label>
+          <div class="field-hint provider-note">请求字段：prompt、seed、duration、resolution、ref_image_0 至 ref_image_8、ref_audio_0 至 ref_audio_2；不会读取本地 ComfyUI 的 LoRA、步数、百万像素或显存设置。</div>
+          <label class="field">
+            <span class="field-label">额外 JSON 参数（可选）</span>
+            <textarea v-model="cfgForm.settings.autodlComfyui.extraParamsText" class="textarea mono" rows="3" placeholder="例如 {&quot;seed&quot;: 1234}" />
+          </label>
+        </div>
         <label class="field">
           <span class="field-label model-field-label">
             <span>模型</span>
@@ -364,7 +420,7 @@
               type="button"
               class="btn btn-ghost btn-xs model-refresh-btn"
               :disabled="mijingModelsLoading"
-              title="刷新谜镜模型列表"
+              title="刷新eggfans模型列表"
               @click="refreshMijingModels"
             >
               <Loader2 v-if="mijingModelsLoading" :size="12" class="animate-spin" />
@@ -383,13 +439,13 @@
             v-else-if="cfgForm.provider === 'mijing'"
             :model-value="cfgForm.modelStr"
             :options="mijingModelOptions"
-            :placeholder="mijingModelsLoading ? '正在加载谜镜模型' : '选择谜镜模型'"
+            :placeholder="mijingModelsLoading ? '正在加载eggfans模型' : '选择eggfans模型'"
             searchable
             @update:model-value="applyMijingModel"
           />
           <input v-else v-model="cfgForm.modelStr" class="input" placeholder="model-name" />
-          <span v-if="cfgForm.provider === 'eggfans'" class="field-hint">模型来自 eggfans.com/api/pricing_new，并按当前服务类型过滤。</span>
-          <span v-if="cfgForm.provider === 'mijing'" class="field-hint">模型来自谜镜 /v1/aimodels，并按当前服务类型过滤。</span>
+          <span v-if="cfgForm.provider === 'eggfans'" class="field-hint">模型来自 api.eggfans.org/api/pricing_new，并按当前服务类型过滤。</span>
+          <span v-if="cfgForm.provider === 'mijing'" class="field-hint">模型来自eggfans /v1/aimodels，并按当前服务类型过滤。</span>
           <span v-if="cfgForm.provider === 'grok_openai'" class="field-hint">OpenAI 兼容视频通道，默认使用 grok-imagine-video；参考图走公网 URL 或 base64，不上传火山素材库。</span>
         </label>
         <div v-if="cfgForm.provider === 'eggfans' && cfgEggfansMeta" class="eggfans-model-meta">
@@ -432,7 +488,7 @@
           </div>
         </div>
         <div v-if="cfgForm.provider === 'mijing' && cfgForm.service_type === 'video'" class="provider-note">
-          谜镜 seedance2.0创作版走谜镜网关顶层字段：reference_image_urls、duration、ratio、watermark=false、generate_audio=true、resolution=720p；官方火山 Seedance 2.0 配置仍使用 volcengine。
+          eggfans seedance2.0创作版走eggfans网关顶层字段：reference_image_urls、duration、ratio、watermark=false、generate_audio=true、resolution=720p；官方火山 Seedance 2.0 配置仍使用 volcengine。
         </div>
         <div v-if="cfgForm.provider === 'grok_openai' && cfgForm.service_type === 'video'" class="provider-note">
           Grok Imagine 使用 OpenAI 兼容视频端点：/v1/videos/generations 创建、/v1/videos/{id} 查询；请求字段为 model、prompt、image/reference_images、duration、aspect_ratio、resolution，不使用火山资产 URI。
@@ -471,8 +527,8 @@
         <div class="preset-form-grid">
           <label class="field">
             <span class="field-label">Eggfans API Key <span class="dim">(文本 / 图片 / 非 Seedance 视频 / 音频)</span></span>
-            <input v-model="presetForm.eggfansApiKey" class="input" type="password" placeholder="用于 api.eggfans.com 聚合站服务" />
-            <span class="field-hint">模型目录来自 <a href="https://eggfans.com/api/pricing_new" target="_blank" rel="noopener">pricing_new</a></span>
+            <input v-model="presetForm.eggfansApiKey" class="input" type="password" placeholder="用于 api.eggfans.org 聚合站服务" />
+            <span class="field-hint">模型目录来自 <a href="https://api.eggfans.org/api/pricing_new" target="_blank" rel="noopener">pricing_new</a></span>
           </label>
           <label class="field">
             <span class="field-label">火山 Seedance 2.0 API Key <span class="dim">(可留空，后续补填)</span></span>
@@ -547,7 +603,7 @@ import { toast } from 'vue-sonner'
 import { aiConfigAPI, agentConfigAPI, skillsAPI, eggfansModelAPI, mijingModelAPI, preferenceAPI } from '~/composables/useApi'
 import { buildConfigTestPayload, resolveMijingBaseUrl } from '~/utils/provider-config'
 import { getDefaultProviderPriority } from '~/utils/provider-defaults'
-import brandLogo from '~/assets/mijing-logo.png'
+import brandLogo from '~/assets/eggfans-logo.png'
 
 const showBrandImage = ref(true)
 const tab = ref('ai')
@@ -570,6 +626,8 @@ const cfgEditId = ref(null)
 const presetDialog = ref(false)
 const cfgTesting = ref(false)
 const cfgTestResult = ref(null)
+const cfgTestingId = ref(null)
+const cfgListTestResults = ref({})
 const assetKeyDraft = ref('')
 const assetKeySaving = ref(false)
 const assetKeyTesting = ref(false)
@@ -588,7 +646,18 @@ const cfgForm = reactive({
   priority: 0,
   endpoint: '',
   query_endpoint: '',
-  settings: null,
+  // Keep provider-specific controls isolated from the local ComfyUI settings.
+  // The template binds these fields before a provider-change callback can run,
+  // so initialize the AutoDL branch eagerly as well.
+  settings: { autodlComfyui: {
+    workflowId: 'minimax_h3_image_audio_to_video_v2_15s',
+    duration: 5,
+    resolution: '768p竖',
+    referenceImagesField: 'reference_images',
+    referenceImageFormat: 'array',
+    maxReferenceImages: 9,
+    extraParamsText: '',
+  } },
   has_api_key: false,
 })
 const presetForm = reactive({
@@ -602,17 +671,19 @@ const presetForm = reactive({
   },
 })
 const serviceTypes = [{ type: 'text', label: '文本' }, { type: 'image', label: '图片' }, { type: 'video', label: '视频' }, { type: 'audio', label: '音频' }]
-const providers = ['ali', 'chatfire', 'eggfans', 'gemini', 'grok_openai', 'mijing', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine']
-const quickProviderWhitelist = ['mijing', 'eggfans']
+const providers = ['ali', 'chatfire', 'comfyui', 'autodl_comfyui', 'eggfans', 'gemini', 'grok_openai', 'mijing', 'minimax', 'openai', 'openrouter', 'vidu', 'volcengine']
+const quickProviderWhitelist = ['mijing', 'eggfans', 'comfyui', 'autodl_comfyui']
 const restrictedPresetTypes = ['text', 'image', 'video']
-const visibleProviderWhitelist = ['mijing', 'eggfans']
+const visibleProviderWhitelist = ['mijing', 'eggfans', 'comfyui', 'autodl_comfyui']
 const providerLabels = {
   ali: '阿里百炼',
   chatfire: 'ChatFire',
+  comfyui: '本地 MiniMax H3 Worker（自动启动）',
+  autodl_comfyui: 'AutoDL 私域 MiniMax H3',
   eggfans: 'Eggfans 聚合站',
   gemini: 'Gemini',
   grok_openai: 'Grok Imagine · OpenAI 兼容',
-  mijing: '谜镜',
+  mijing: 'eggfans',
   minimax: 'MiniMax',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
@@ -620,31 +691,42 @@ const providerLabels = {
   volcengine: '火山方舟官方',
 }
 const providerSelectOptions = computed(() => visibleProviderWhitelist.map(p => ({ label: providerLabels[p] || p, value: p })))
+const localH3UnetOptions = [
+  { label: 'Ref2VA Pruned INT8 (default)', value: 'minimax-h3\\minimax_h3_ref2va_pruned_int8_convrot.safetensors' },
+  { label: 'Hybrid FL2VA / Ref2VA B25-49 INT8', value: 'minimax-h3\\minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors' },
+  { label: 'FL2VA Pruned INT8', value: 'minimax-h3\\minimax_h3_fl2va_pruned_int8_convrot.safetensors' },
+]
+const localH3TurboLoraOptions = [
+  { label: 'Turbo v4 Step600 EMA (default)', value: 'minimaxh3\\minimax_h3_turbo_v4_step600_ema.safetensors' },
+  { label: 'Turbo 4 Steps ComfyUI', value: 'minimaxh3\\minimax_h3_turbo_4STEPS_comfyui.safetensors' },
+]
 const serviceMeta = {
   text: { label: '文本', desc: '剧本改写、角色场景提取、分镜拆解等 Agent 文本能力' },
-  image: { label: '图片', desc: '角色图、场景图、镜头图与首尾帧等静态图像生成' },
-  video: { label: '视频', desc: '镜头视频生成，支持单图、多图和首尾帧模式' },
+  image: { label: '图片', desc: '角色图、场景图、镜头图与参考图等静态图像生成' },
+  video: { label: '视频', desc: '镜头视频生成，支持多参考图模式' },
   audio: { label: '音频', desc: '角色试听、旁白与对白语音生成' },
   asset: { label: '素材上传', desc: '火山素材库上传通道' },
 }
 const providerPresets = {
   text: {
-    eggfans: { label: 'Eggfans 推荐', baseUrl: 'https://api.eggfans.com', models: ['gpt-5.5'] },
-    mijing: { label: '谜镜文本', baseUrl: resolveMijingBaseUrl('text'), models: ['豆包2.0-pro'] },
+    eggfans: { label: 'Eggfans 推荐', baseUrl: 'https://api.eggfans.org', models: ['gpt-5.5'] },
+    mijing: { label: 'eggfans文本', baseUrl: resolveMijingBaseUrl('text'), models: ['豆包2.0-pro'] },
     chatfire: { label: 'ChatFire 推荐', baseUrl: 'https://api.chatfire.site', models: ['gemini-3-pro-preview'] },
     openrouter: { label: 'OpenRouter 推荐', baseUrl: 'https://openrouter.ai/api', models: ['google/gemini-3-flash-preview'] },
     openai: { label: 'OpenAI 推荐', baseUrl: 'https://api.openai.com', models: ['gpt-4.1-mini'] },
   },
   image: {
-    eggfans: { label: 'Eggfans 推荐', baseUrl: 'https://api.eggfans.com', models: ['gpt-image-2-c'] },
-    mijing: { label: '谜镜图片', baseUrl: resolveMijingBaseUrl('image'), models: ['Seedream5.0'] },
+    eggfans: { label: 'Eggfans 推荐', baseUrl: 'https://api.eggfans.org', models: ['gpt-image-2-c'] },
+    mijing: { label: 'eggfans图片', baseUrl: resolveMijingBaseUrl('image'), models: ['Seedream5.0'] },
     chatfire: { label: 'ChatFire 推荐', baseUrl: 'https://api.chatfire.site', models: ['doubao-seedream-4-5-251128'] },
     gemini: { label: 'Gemini 推荐', baseUrl: 'https://api.chatfire.site', models: ['gemini-3-pro-image-preview'] },
     volcengine: { label: '火山推荐', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedream-4-0-250828'] },
   },
   video: {
+    comfyui: { label: '本地 MiniMax H3（后台 Worker）', baseUrl: 'http://127.0.0.1:8188', models: ['MiniMax-H3-local'], endpoint: '/prompt', settings: { comfyui: { lora: 'minimaxh3\\minimax_h3_turbo_v4_step600_ema.safetensors', loraStrength: 1, lowVram: false, clipDevice: 'default', steps: 4 } } },
+    autodl_comfyui: { label: 'AutoDL 私域 MiniMax H3', baseUrl: 'https://autodl.art', models: ['minimax_h3_image_audio_to_video_v2_15s'], endpoint: '/api/v1/comfyui/comfyui_workflow/{workflow_id}', query_endpoint: '/api/v1/comfyui/comfyui_workflow/result/{task_id}', settings: { autodlComfyui: { workflowId: 'minimax_h3_image_audio_to_video_v2_15s', duration: 5, resolution: '768p竖', referenceImagesField: 'reference_images', referenceImageFormat: 'array', maxReferenceImages: 9 } } },
     volcengine: { label: 'Seedance 2.0 官方', baseUrl: 'https://ark.cn-beijing.volces.com', models: ['doubao-seedance-2-0-260128'] },
-    mijing: { label: '谜镜视频', baseUrl: 'https://api.magine.work', models: ['seedance2.0创作版'] },
+    mijing: { label: 'eggfans视频', baseUrl: 'https://api.magine.work', models: ['seedance2.0创作版'] },
     grok_openai: {
       label: 'Grok Imagine OpenAI',
       baseUrl: 'https://api.aigcly.top',
@@ -657,12 +739,12 @@ const providerPresets = {
         },
       },
     },
-    eggfans: { label: 'Eggfans 视频', baseUrl: 'https://api.eggfans.com', models: ['grok-video-3-10s'] },
+    eggfans: { label: 'Eggfans 视频', baseUrl: 'https://api.eggfans.org', models: ['grok-video-3-10s'] },
     vidu: { label: 'Vidu 推荐', baseUrl: 'https://api.vidu.com', models: ['viduq3-turbo'] },
     ali: { label: '阿里推荐', baseUrl: 'https://dashscope.aliyuncs.com', models: ['wan2.6-i2v-flash'] },
   },
   audio: {
-    eggfans: { label: 'Eggfans 音频', baseUrl: 'https://api.eggfans.com', models: ['speech-2.8-hd'] },
+    eggfans: { label: 'Eggfans 音频', baseUrl: 'https://api.eggfans.org', models: ['speech-2.8-hd'] },
     minimax: { label: 'MiniMax 音频', baseUrl: 'https://api.chatfire.site/minimax', models: ['speech-2.8-hd'] },
   },
 }
@@ -680,10 +762,10 @@ function presetPriority(serviceType, provider) {
   return getDefaultProviderPriority(serviceType, provider)
 }
 const editableEggfansPresetCards = [
-  { serviceType: 'text', label: '文本', provider: 'eggfans', baseUrl: 'https://api.eggfans.com', priority: presetPriority('text', 'eggfans') },
-  { serviceType: 'image', label: '图片', provider: 'eggfans', baseUrl: 'https://api.eggfans.com', priority: presetPriority('image', 'eggfans') },
-  { serviceType: 'video', label: '视频', provider: 'eggfans', baseUrl: 'https://api.eggfans.com', priority: presetPriority('video', 'eggfans') },
-  { serviceType: 'audio', label: '音频', provider: 'eggfans', baseUrl: 'https://api.eggfans.com', priority: presetPriority('audio', 'eggfans') },
+  { serviceType: 'text', label: '文本', provider: 'eggfans', baseUrl: 'https://api.eggfans.org', priority: presetPriority('text', 'eggfans') },
+  { serviceType: 'image', label: '图片', provider: 'eggfans', baseUrl: 'https://api.eggfans.org', priority: presetPriority('image', 'eggfans') },
+  { serviceType: 'video', label: '视频', provider: 'eggfans', baseUrl: 'https://api.eggfans.org', priority: presetPriority('video', 'eggfans') },
+  { serviceType: 'audio', label: '音频', provider: 'eggfans', baseUrl: 'https://api.eggfans.org', priority: presetPriority('audio', 'eggfans') },
 ]
 const eggfansPresetCards = computed(() => [
   ...editableEggfansPresetCards.map(preset => ({
@@ -712,7 +794,7 @@ const eggfansImageHostConfig = computed(() => cfgs.value.find(c => c.service_typ
 const endpointHint = computed(() => {
   const provider = cfgForm.provider
   const base = cfgForm.base_url || 'https://...'
-  if ((provider === 'eggfans' || provider === 'mijing' || provider === 'grok_openai') && cfgForm.endpoint) return `${base.replace(/\/+$/, '')}${cfgForm.endpoint}`
+  if ((provider === 'eggfans' || provider === 'mijing' || provider === 'grok_openai' || provider === 'comfyui' || provider === 'autodl_comfyui') && cfgForm.endpoint) return `${base.replace(/\/+$/, '')}${cfgForm.endpoint}`
   const prefix = endpointPrefixes[provider] || ''
   if (!provider) return '选择服务商后显示推荐端点前缀'
   return `${base}${prefix}`
@@ -806,7 +888,7 @@ async function loadMijingModels(type, force = false) {
       if ((result.models || []).some(model => model.name === cfgForm.modelStr)) applyMijingModel(cfgForm.modelStr)
     }
   } catch (e) {
-    toast.error(`谜镜模型加载失败：${e.message}`)
+    toast.error(`eggfans模型加载失败：${e.message}`)
   } finally {
     mijingModelsLoading.value = false
   }
@@ -830,6 +912,17 @@ function clearProviderMetadata() {
   cfgForm.endpoint = ''
   cfgForm.query_endpoint = ''
   cfgForm.settings = null
+}
+
+function ensureAutoDlSettings() {
+  const current = cfgForm.settings?.autodlComfyui
+  if (current && typeof current === 'object') return current
+  const defaults = providerPresets.video?.autodl_comfyui?.settings?.autodlComfyui || {
+    workflowId: cfgForm.modelStr || 'minimax_h3_image_audio_to_video_v2_15s', duration: 5, resolution: '768p竖',
+    referenceImagesField: 'reference_images', referenceImageFormat: 'array', maxReferenceImages: 9,
+  }
+  cfgForm.settings = { autodlComfyui: { ...defaults } }
+  return cfgForm.settings.autodlComfyui
 }
 
 function applyGrokOpenAIModel(value) {
@@ -931,6 +1024,15 @@ async function applyMijingModelAfterLoad(type, modelName) {
   }
 }
 
+function ensureLocalH3Settings() {
+  cfgForm.settings = JSON.parse(JSON.stringify(cfgForm.settings || {}))
+  cfgForm.settings.comfyui ||= {}
+  cfgForm.settings.comfyui.refinement = {
+    enabled: false, scale: 1.25, steps: 2, denoise: 0.2,
+    ...(cfgForm.settings.comfyui.refinement || {}),
+  }
+}
+
 function applyProviderPreset(type, provider) {
   const preset = providerPresets[type]?.[provider]
   if (!preset) return
@@ -947,6 +1049,19 @@ function applyProviderPreset(type, provider) {
     cfgForm.query_endpoint = preset.query_endpoint || '/v1/videos/{id}'
     cfgForm.settings = preset.settings || { grokOpenai: { defaults: { resolution: '720p' } } }
   }
+  if (provider === 'comfyui') {
+    cfgForm.endpoint = preset.endpoint || '/prompt'
+    cfgForm.settings = preset.settings || { comfyui: { lora: 'minimaxh3\\minimax_h3_turbo_v4_step600_ema.safetensors', loraStrength: 1, lowVram: false, clipDevice: 'default', steps: 4 } }
+    ensureLocalH3Settings()
+  }
+  if (provider === 'autodl_comfyui') {
+    const preset = providerPresets.video?.autodl_comfyui
+    cfgForm.base_url = cfgForm.base_url || preset?.baseUrl || 'https://autodl.art'
+    cfgForm.endpoint = preset?.endpoint || '/api/v1/comfyui/comfyui_workflow/{workflow_id}'
+    cfgForm.query_endpoint = preset?.query_endpoint || '/api/v1/comfyui/comfyui_workflow/result/{task_id}'
+    cfgForm.modelStr = cfgForm.modelStr || preset?.models?.[0] || 'minimax_h3_image_audio_to_video_v2_15s'
+    ensureAutoDlSettings()
+  }
 }
 function onProviderChanged(provider) {
   clearProviderMetadata()
@@ -962,6 +1077,20 @@ function onProviderChanged(provider) {
     }
   }
   if (provider === 'grok_openai') applyGrokOpenAIModel(cfgForm.modelStr || 'grok-imagine-video')
+  if (provider === 'comfyui') {
+    cfgForm.base_url = cfgForm.base_url || 'http://127.0.0.1:8188'
+    cfgForm.endpoint = '/prompt'
+    cfgForm.settings = cfgForm.settings?.comfyui ? cfgForm.settings : { comfyui: { lora: 'minimaxh3\\minimax_h3_turbo_v4_step600_ema.safetensors', loraStrength: 1, lowVram: false, clipDevice: 'default', steps: 4 } }
+    ensureLocalH3Settings()
+  }
+  if (provider === 'autodl_comfyui') {
+    const preset = providerPresets.video?.autodl_comfyui
+    cfgForm.base_url = cfgForm.base_url || preset?.baseUrl || 'https://autodl.art'
+    cfgForm.endpoint = cfgForm.endpoint || preset?.endpoint || '/api/v1/comfyui/comfyui_workflow/{workflow_id}'
+    cfgForm.query_endpoint = cfgForm.query_endpoint || preset?.query_endpoint || '/api/v1/comfyui/comfyui_workflow/result/{task_id}'
+    cfgForm.modelStr = cfgForm.modelStr || preset?.models?.[0] || 'minimax_h3_image_audio_to_video_v2_15s'
+    ensureAutoDlSettings()
+  }
 }
 
 function resetPresetPreferences() {
@@ -1165,6 +1294,8 @@ function startEditCfg(c) {
   if (c.provider === 'grok_openai' && c.service_type === 'video') {
     applyGrokOpenAIModel(cfgForm.modelStr)
   }
+  if (c.provider === 'autodl_comfyui' && c.service_type === 'video') ensureAutoDlSettings()
+  if (c.provider === 'comfyui' && c.service_type === 'video') ensureLocalH3Settings()
   cfgDialog.value = true
 }
 async function testCfgPayload(payload) {
@@ -1233,17 +1364,31 @@ async function persistCfgKeyDraft() {
   await cfgKeyPersistQueue
 }
 async function testExistingCfg(c) {
-  startEditCfg(c)
-  await testCfgPayload({
-    service_type: c.service_type,
-    provider: c.provider,
-    id: c.id,
-  })
+  cfgTestingId.value = c.id
+  try {
+    const result = await aiConfigAPI.testExisting(c.id)
+    cfgListTestResults.value = { ...cfgListTestResults.value, [c.id]: result }
+    if (result.reachable) toast.success('配置测试通过')
+    else toast.warning(result.message || '配置未通过测试')
+  } catch (e) {
+    toast.error(e.message)
+  } finally {
+    cfgTestingId.value = null
+  }
 }
 async function saveCfg() {
   if (!cfgForm.provider) { toast.warning('选择服务商'); return }
   const models = cfgForm.modelStr.split(',').map(s => s.trim()).filter(Boolean)
   try {
+    let settings = cfgForm.settings || null
+    if (cfgForm.provider === 'autodl_comfyui') {
+      const current = ensureAutoDlSettings()
+      if (String(current.extraParamsText || '').trim()) {
+        try { current.extraParams = JSON.parse(current.extraParamsText) } catch { toast.warning('AutoDL 额外 JSON 参数格式无效'); return }
+      }
+      const { extraParamsText, ...clean } = current
+      settings = { autodlComfyui: clean }
+    }
     const payload = {
       name: cfgForm.name,
       provider: cfgForm.provider,
@@ -1251,7 +1396,7 @@ async function saveCfg() {
       model: models,
       endpoint: cfgForm.endpoint || null,
       query_endpoint: cfgForm.query_endpoint || null,
-      settings: cfgForm.settings || null,
+      settings,
       priority: cfgForm.priority,
     }
     if (cfgForm.api_key) Object.assign(payload, { api_key: cfgForm.api_key })
@@ -1369,8 +1514,7 @@ const defaultPrompts = {
 工作流程：
 1. 调用 read_shots_for_grid 读取选中镜头的详细信息
 2. 根据 mode 调用 generate_grid_prompt：
-   - first_frame 模式：每格=一个镜头的首帧，NxN 风格统一
-   - first_last 模式：每个镜头占2格（左首右尾），同一行风格连续
+   - 多参考模式：每格=一个镜头的参考图，NxN 风格统一
    - multi_ref 模式：所有格子都是同一镜头的不同参考角度
 3. 返回 grid_prompt（整体提示词）和 cell_prompts（每格提示词）
 
@@ -1756,7 +1900,9 @@ onMounted(() => { loadPresetPreferences(); loadCfgs(); loadAgents(); loadAllSkil
 .section-title { font-size: 13px; font-weight: 600; }
 .section-subtitle { font-size: 11px; color: var(--text-3); margin-top: 2px; }
 .config-list { display: flex; flex-direction: column; gap: 6px; }
+.config-row-wrap { overflow: hidden; }
 .config-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; }
+.config-test-result { margin: 0 14px 12px; }
 .config-info { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
 .config-main { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .config-line { display: flex; align-items: center; gap: 8px; min-width: 0; }

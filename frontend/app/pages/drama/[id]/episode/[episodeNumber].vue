@@ -13,7 +13,7 @@
           <span class="studio-episode-chip">第 {{ episodeNumber }} 集</span>
           <div class="studio-meta-row">
             <span class="studio-meta-pill">{{ currentSubStageLabel }}</span>
-            <span class="studio-meta-pill is-progress">{{ pipelineProgress }}/11</span>
+            <span class="studio-meta-pill is-progress">{{ pipelineProgress }}/{{ pipelineTotal }}</span>
             <span class="studio-meta-inline">{{ chars.length }} 角色 · {{ sbs.length }} 镜头</span>
           </div>
         </div>
@@ -77,10 +77,10 @@
         <div class="progress-wrap">
           <div class="progress-head">
             <span class="progress-label">制作进度</span>
-            <span class="progress-val">{{ pipelineProgress }}/11</span>
+            <span class="progress-val">{{ pipelineProgress }}/{{ pipelineTotal }}</span>
           </div>
           <div class="progress-track">
-            <div class="progress-fill" :style="{ width: Math.min(100, pipelineProgress / 11 * 100) + '%' }"></div>
+            <div class="progress-fill" :style="{ width: Math.min(100, pipelineProgress / pipelineTotal * 100) + '%' }"></div>
           </div>
         </div>
         <div class="sidebar-jumper" v-if="sidebarJumpSteps.length">
@@ -194,11 +194,11 @@
             <div class="toolbar-left">
               <div class="step-indicator">
                 <span class="step-num">03</span>
-                <span class="step-name">提取角色与场景</span>
+                <span class="step-name">提取角色、场景与道具</span>
               </div>
             </div>
             <div class="toolbar-right">
-              <span v-if="hasExtractedAssets" class="char-count">{{ chars.length }} 角色 · {{ scenes.length }} 场景</span>
+              <span v-if="hasExtractedAssets" class="char-count">{{ chars.length }} 角色 · {{ scenes.length }} 场景 · {{ props.length }} 道具</span>
               <button v-if="hasExtractedAssets" class="btn btn-sm" @click="doExtract" :disabled="rn">
                 <Loader2 v-if="rn && rt === 'extractor'" :size="11" class="animate-spin" />
                 <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -211,8 +211,8 @@
             <div class="empty-visual">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             </div>
-            <div class="empty-title">从剧本提取角色与场景</div>
-            <div class="empty-desc">AI 自动分析剧本，提取角色信息和场景列表，与项目已有数据智能去重合并</div>
+            <div class="empty-title">从剧本提取角色、场景与道具</div>
+            <div class="empty-desc">AI 自动分析剧本，提取角色、场景和道具，与项目已有数据智能去重合并</div>
             <button class="btn btn-primary" @click="doExtract">
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
               开始提取
@@ -220,13 +220,13 @@
           </div>
           <div v-else-if="rn && rt === 'extractor'" class="step-loading">
             <Loader2 :size="24" class="animate-spin" style="color:var(--accent)" />
-            <div class="loading-text">正在提取角色和场景...</div>
+            <div class="loading-text">正在提取角色、场景和道具...</div>
           </div>
           <div v-else class="extract-stage">
             <aside class="card extract-summary">
               <div class="extract-summary-kicker">Extraction Board</div>
-              <div class="extract-summary-title">角色与场景结果</div>
-              <div class="extract-summary-desc">从剧本里提取出的角色和场景已经入库。这里先确认命名、定位和描述是否可直接进入后续制作。</div>
+              <div class="extract-summary-title">角色、场景与道具结果</div>
+              <div class="extract-summary-desc">从剧本里提取出的角色、场景和道具已经入库。这里先确认命名、定位和描述是否可直接进入后续制作。</div>
               <div class="extract-summary-stats">
                 <div class="extract-summary-stat">
                   <span>角色</span>
@@ -235,6 +235,10 @@
                 <div class="extract-summary-stat">
                   <span>场景</span>
                   <strong>{{ scenes.length }}</strong>
+                </div>
+                <div class="extract-summary-stat">
+                  <span>道具</span>
+                  <strong>{{ props.length }}</strong>
                 </div>
               </div>
               <div class="extract-summary-note">如果角色描述过于简短，后续分配音色和生成形象时建议先补充人物特征。</div>
@@ -277,6 +281,26 @@
                       <span v-if="s.time" class="tag">{{ s.time }}</span>
                     </div>
                     <div class="extract-meta wrap">{{ s.description || s.time || '等待补充场景描述' }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="props.length" class="card extract-card extract-props">
+              <div class="extract-card-head">
+                <Package :size="14" />
+                <span>道具</span>
+                <span class="tag tag-accent">{{ props.length }}</span>
+                <button class="btn btn-sm ml-auto" @click="goSubStep('prod:props')">生成道具资产</button>
+              </div>
+              <div class="extract-list">
+                <div v-for="prop in props" :key="prop.id" class="extract-row">
+                  <div class="scene-icon"><Package :size="12" /></div>
+                  <div class="extract-info">
+                    <div class="extract-name-row">
+                      <div class="extract-name">{{ prop.name }}</div>
+                      <span class="tag">{{ prop.type || '道具' }}</span>
+                    </div>
+                    <div class="extract-meta wrap">{{ prop.description || prop.prompt || '暂无描述' }}</div>
                   </div>
                 </div>
               </div>
@@ -511,35 +535,7 @@
                       <span class="tag">{{ getSceneName(selectedSb) }}</span>
                       <span class="tag">{{ selectedSb.angle || '未设角度' }}</span>
                       <span class="tag">{{ selectedSb.movement || '未设运镜' }}</span>
-                      <span class="tag" :class="getFirstFrame(selectedSb) ? 'tag-success' : ''">首帧 {{ getFirstFrame(selectedSb) ? '已生成' : '待生成' }}</span>
-                      <span class="tag" :class="getLastFrame(selectedSb) ? 'tag-success' : ''">尾帧 {{ getLastFrame(selectedSb) ? '已生成' : '待生成' }}</span>
                       <span class="tag" :class="hasVid(selectedSb) ? 'tag-success' : ''">视频 {{ hasVid(selectedSb) ? '已生成' : '待生成' }}</span>
-                    </div>
-                  </div>
-                  <div class="detail-preview-grid">
-                    <div class="detail-preview-card">
-                      <div class="detail-preview-title">首帧</div>
-                      <div class="detail-preview-media">
-                        <img
-                          v-if="getFirstFrame(selectedSb)"
-                          :src="'/' + getFirstFrame(selectedSb)"
-                          class="previewable-image"
-                          @click.stop="openImageViewer('/' + getFirstFrame(selectedSb), `镜头 #${sbs.indexOf(selectedSb) + 1} 首帧`)"
-                        />
-                        <div v-else class="detail-preview-empty">待生成</div>
-                      </div>
-                    </div>
-                    <div class="detail-preview-card">
-                      <div class="detail-preview-title">尾帧</div>
-                      <div class="detail-preview-media">
-                        <img
-                          v-if="getLastFrame(selectedSb)"
-                          :src="'/' + getLastFrame(selectedSb)"
-                          class="previewable-image"
-                          @click.stop="openImageViewer('/' + getLastFrame(selectedSb), `镜头 #${sbs.indexOf(selectedSb) + 1} 尾帧`)"
-                        />
-                        <div v-else class="detail-preview-empty">待生成</div>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -680,7 +676,7 @@
                   <label class="field">
                     <span class="field-label">静态画面提示词</span>
                     <textarea :value="selectedSb.image_prompt || selectedSb.imagePrompt || ''" class="textarea" rows="4"
-                      @blur="updateField(selectedSb, 'image_prompt', $event.target.value)" placeholder="用于首帧、尾帧和镜头图片的单帧画面提示词" />
+                      @blur="updateField(selectedSb, 'image_prompt', $event.target.value)" placeholder="用于镜头单帧画面和参考图的图片提示词" />
                   </label>
                   <label class="field">
                     <span class="field-label">视频提示词</span>
@@ -711,7 +707,7 @@
           <div v-else-if="rn && rt === 'storyboard_breaker'" class="step-loading">
             <Loader2 :size="24" class="animate-spin" style="color:var(--accent)" />
             <div class="loading-text">正在拆解分镜并生成提示词...</div>
-            <div class="loading-detail">谜镜长文本拆解通常需要 1-3 分钟，请保持当前页面开启</div>
+            <div class="loading-detail">eggfans长文本拆解通常需要 1-3 分钟，请保持当前页面开启</div>
           </div>
 
           <div v-else class="step-empty">
@@ -951,6 +947,75 @@
             </div>
           </div>
 
+          <div v-else-if="prodTab === 'props'" class="prod-content">
+            <div class="prod-section-bar">
+              <span class="dim" style="font-size:12px">{{ props.length }} 个道具</span>
+              <span class="tag mono">{{ propImgCount }}/{{ props.length }} 已生成</span>
+              <span v-if="imageConfigSelectOptions.length <= 1" class="tag">{{ effectiveImageConfigLabel }}</span>
+              <div class="ml-auto flex gap-1">
+                <BaseSelect
+                  v-if="imageConfigSelectOptions.length > 1"
+                  v-model="selectedImageModelKey"
+                  :options="imageConfigSelectOptions"
+                  placeholder="图片模型"
+                  searchable
+                  style="width:230px"
+                />
+                <BaseSelect
+                  v-if="isEggfansGptImage2C"
+                  v-model="selectedGptImage2CSize"
+                  :options="gptImage2CSizeOptions"
+                  placeholder="图片尺寸"
+                  searchable
+                  style="width:176px"
+                />
+                <button class="btn btn-sm" :disabled="batchPropImagesRunning || !pendingPropImageTargets.length" @click="batchPropImages">
+                  <Loader2 v-if="batchPropImagesRunning" :size="11" class="animate-spin" />
+                  <ImageIcon v-else :size="11" />
+                  {{ batchPropImagesRunning ? '提交中' : '批量生成' }}
+                </button>
+              </div>
+            </div>
+            <input ref="propMaterialInput" type="file" accept="image/jpeg,image/png,image/webp" hidden @change="handlePropMaterialFile" />
+            <div v-if="!props.length" class="step-empty">
+              <div class="empty-visual"><Package :size="32" /></div>
+              <div class="empty-title">本集暂无道具资产</div>
+              <div class="empty-desc">提取出的道具会显示在这里。若剧本中有道具但未列出，请返回资产提取检查。</div>
+              <button class="btn btn-primary" @click="goSubStep('script:extract')">查看资产提取</button>
+            </div>
+            <div v-else class="asset-grid">
+              <div v-for="prop in props" :key="prop.id" class="card asset-card prop-asset-card">
+                <div class="asset-cover">
+                  <img
+                    v-if="prop.image_url || prop.imageUrl"
+                    :src="mediaSrc(prop.image_url || prop.imageUrl)"
+                    :alt="`${prop.name} 道具资产图`"
+                    class="previewable-image"
+                    @click.stop="openImageViewer(mediaSrc(prop.image_url || prop.imageUrl), `${prop.name} 道具资产图`)"
+                  />
+                  <div v-else class="asset-cover-empty"><Package :size="20" /></div>
+                  <span class="asset-cover-badge" :class="imageBadgeClass('prop', prop.id)">{{ imageBadgeLabel('prop', prop.id, prop.image_url || prop.imageUrl) }}</span>
+                </div>
+                <div class="asset-body">
+                  <div class="asset-name">{{ prop.name }}</div>
+                  <div class="asset-meta dim">{{ prop.type || '道具' }}</div>
+                  <div class="prop-asset-description">{{ prop.description || prop.prompt || '暂无描述' }}</div>
+                </div>
+                <div class="asset-foot">
+                  <span :class="['dot', (prop.image_url || prop.imageUrl) && 'ok', isPendingPropImage(prop.id) && 'pending']" />
+                  <span class="dim" style="font-size:10px">{{ imageBadgeLabel('prop', prop.id, prop.image_url || prop.imageUrl) }}</span>
+                  <button class="btn btn-sm" :disabled="!!uploadingPropImageId || isPendingPropImage(prop.id)" @click="choosePropMaterial(prop)">
+                    {{ uploadingPropImageId === prop.id ? '上传中' : ((prop.image_url || prop.imageUrl) ? '替换图片' : '上传图片') }}
+                  </button>
+                  <button class="btn btn-sm ml-auto" :disabled="isPendingPropImage(prop.id) || uploadingPropImageId === prop.id" @click="retryOrGenerateImage('prop', prop.id, () => genPropImg(prop.id))">
+                    {{ isPendingPropImage(prop.id) ? '生成中' : (hasFailedImageGeneration('prop', prop.id) ? '重试生成' : ((prop.image_url || prop.imageUrl) ? '重新生成' : '生成')) }}
+                  </button>
+                  <span v-if="imageGenerationError('prop', prop.id)" class="asset-generation-error" :title="imageGenerationError('prop', prop.id)">{{ imageGenerationError('prop', prop.id) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Sub: Dubbing -->
           <div v-else-if="prodTab === 'dubbing'" class="prod-content">
             <div class="prod-section-bar">
@@ -1025,8 +1090,6 @@
             <div class="prod-section-bar">
               <span class="dim" style="font-size:12px">{{ sbs.length }} 个镜头</span>
               <span class="tag mono">{{ shotImgCount }}/{{ sbs.length }} 已有帧图</span>
-              <span v-if="frameMode !== 'multi_ref'" class="tag mono">首帧 {{ shotFirstFrameCount }}/{{ sbs.length }}</span>
-              <span v-if="frameMode === 'first_last'" class="tag mono">尾帧 {{ shotLastFrameCount }}/{{ sbs.length }}</span>
               <span v-if="frameMode === 'multi_ref'" class="tag mono">参考图 {{ shotReferenceCount }}/{{ sbs.length }}</span>
               <span v-if="imageConfigSelectOptions.length <= 1" class="tag">{{ effectiveImageConfigLabel }}</span>
               <div class="ml-auto flex gap-1">
@@ -1047,18 +1110,6 @@
                   style="width:176px"
                 />
                 <BaseSelect v-model="frameMode" :options="frameModeOptions" placeholder="帧模式" searchable style="width:112px" />
-                <button v-if="frameMode !== 'multi_ref'" class="btn btn-sm" :disabled="!missingFirstFrameShots.length" @click="batchShotFrames('first_frame')">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                  批量首帧
-                </button>
-                <button v-if="frameMode === 'first_last'" class="btn btn-sm" :disabled="!missingLastFrameShots.length" @click="batchShotFrames('last_frame')">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                  批量尾帧
-                </button>
-                <button v-if="frameMode === 'first_last'" class="btn btn-sm" :disabled="!missingShotFramePairs.length" @click="batchShotFrames('first_last')">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                  批量首尾帧
-                </button>
                 <button v-if="gridImagePath" class="btn btn-sm" @click="reopenGridPreview">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
                   查看当前宫格图
@@ -1137,94 +1188,37 @@
                     </div>
                     <div class="frame-desc">{{ sb.description || sb.title || '—' }}</div>
                     <div class="frame-meta">
-                      <template v-if="frameMode === 'multi_ref'">
-                        <span :class="['dot', getRefs(sb).length && 'ok']" />
-                        <span class="dim" style="font-size:11px">参考图 {{ getRefs(sb).length }}</span>
-                      </template>
-                      <template v-else>
-                        <span :class="['dot', getFirstFrame(sb) && 'ok', isPendingShotFrame(sb.id, 'first_frame') && 'pending']" />
-                        <span class="dim" style="font-size:11px">首帧</span>
-                      </template>
-                      <span v-if="frameMode === 'first_last'" style="display:flex;align-items:center;gap:4px">
-                        <span :class="['dot', getLastFrame(sb) && 'ok', isPendingShotFrame(sb.id, 'last_frame') && 'pending']" />
-                        <span class="dim" style="font-size:11px">尾帧</span>
-                      </span>
+                      <span class="dot" :class="getRefs(sb).length && 'ok'" />
+                      <span class="dim" style="font-size:11px">参考图 {{ getRefs(sb).length }}</span>
                     </div>
                   </div>
-                  <!-- Thumbnails -->
+                  <!-- Ordered multi-reference thumbnails only. -->
                   <div class="frame-thumbs">
-                    <template v-if="frameMode === 'multi_ref'">
-                      <div class="frame-thumb-wrap">
-                        <div class="frame-ref-strip">
-                          <button
-                            v-for="(ref, refIndex) in getRefs(sb).slice(0, 4)"
-                            :key="`${sb.id}-ref-${refIndex}`"
-                            class="frame-ref-thumb"
-                            :title="`查看参考图 ${refIndex + 1}`"
-                            @click.stop="openImageViewer('/' + ref, `镜头 #${String(i + 1).padStart(2, '0')} 参考图 ${refIndex + 1}`)"
-                          >
-                            <img :src="'/' + ref" class="previewable-image" />
-                            <span v-if="getRefs(sb).length > 4 && refIndex === 3" class="frame-ref-more">+{{ getRefs(sb).length - 4 }}</span>
-                          </button>
-                          <button v-if="!getRefs(sb).length" class="frame-ref-thumb add" title="添加参考图" @click.stop="openGridToolForReference(sb)">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                          </button>
-                        </div>
-                        <div class="frame-ref-footer">
-                          <span class="frame-thumb-label">{{ getRefs(sb).length ? `${getRefs(sb).length} 张参考图` : '添加参考图' }}</span>
-                          <button v-if="getRefs(sb).length" class="frame-ref-add-link" @click.stop="openGridToolForReference(sb)">继续添加</button>
-                        </div>
+                    <div class="frame-thumb-wrap">
+                      <div class="frame-ref-strip">
+                        <button
+                          v-for="(ref, refIndex) in getRefs(sb).slice(0, 4)"
+                          :key="`${sb.id}-ref-${refIndex}`"
+                          class="frame-ref-thumb"
+                          :title="`查看参考图 ${refIndex + 1}`"
+                          @click.stop="openImageViewer('/' + ref, `镜头 #${String(i + 1).padStart(2, '0')} 参考图 ${refIndex + 1}`)"
+                        >
+                          <img :src="'/' + ref" class="previewable-image" />
+                          <span v-if="getRefs(sb).length > 4 && refIndex === 3" class="frame-ref-more">+{{ getRefs(sb).length - 4 }}</span>
+                        </button>
+                        <button v-if="!getRefs(sb).length" class="frame-ref-thumb add" title="添加参考图" @click.stop="openGridToolForReference(sb)">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        </button>
                       </div>
-                    </template>
-                    <div v-else class="frame-thumb-wrap">
-                      <div class="frame-thumb" @click.stop="!isPendingShotFrame(sb.id, 'first_frame') && genShotFrame(sb, 'first_frame')">
-                        <img
-                          v-if="getFirstFrame(sb)"
-                          :src="'/' + getFirstFrame(sb)"
-                          class="previewable-image"
-                          @click.stop="openImageViewer('/' + getFirstFrame(sb), `镜头 #${String(i + 1).padStart(2, '0')} 首帧`)"
-                        />
-                        <div v-else class="frame-thumb-empty">
-                          <Loader2 v-if="isPendingShotFrame(sb.id, 'first_frame')" :size="14" class="animate-spin" />
-                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        </div>
-                        <span v-if="getFirstFrame(sb)" class="frame-re">
-                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                        </span>
-                      </div>
-                      <span class="frame-thumb-label">{{ shotFrameLabel(sb, 'first_frame') }}</span>
-                      <div v-if="shotFrameError(sb, 'first_frame')" class="frame-generation-error" :title="shotFrameError(sb, 'first_frame')">
-                        <span>失败：{{ shotFrameError(sb, 'first_frame') }}</span>
-                        <button class="frame-generation-retry" type="button" @click.stop="retryShotFrame(sb, 'first_frame')">重试</button>
-                      </div>
-                    </div>
-                    <div v-if="frameMode === 'first_last'" class="frame-thumb-wrap">
-                      <div class="frame-thumb" @click.stop="!isPendingShotFrame(sb.id, 'last_frame') && genShotFrame(sb, 'last_frame')">
-                        <img
-                          v-if="getLastFrame(sb)"
-                          :src="'/' + getLastFrame(sb)"
-                          class="previewable-image"
-                          @click.stop="openImageViewer('/' + getLastFrame(sb), `镜头 #${String(i + 1).padStart(2, '0')} 尾帧`)"
-                        />
-                        <div v-else class="frame-thumb-empty">
-                          <Loader2 v-if="isPendingShotFrame(sb.id, 'last_frame')" :size="14" class="animate-spin" />
-                          <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        </div>
-                        <span v-if="getLastFrame(sb)" class="frame-re">
-                          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                        </span>
-                      </div>
-                      <span class="frame-thumb-label">{{ shotFrameLabel(sb, 'last_frame') }}</span>
-                      <div v-if="shotFrameError(sb, 'last_frame')" class="frame-generation-error" :title="shotFrameError(sb, 'last_frame')">
-                        <span>失败：{{ shotFrameError(sb, 'last_frame') }}</span>
-                        <button class="frame-generation-retry" type="button" @click.stop="retryShotFrame(sb, 'last_frame')">重试</button>
+                      <div class="frame-ref-footer">
+                        <span class="frame-thumb-label">{{ getRefs(sb).length ? `${getRefs(sb).length} 张参考图` : '添加参考图' }}</span>
+                        <button v-if="getRefs(sb).length" class="frame-ref-add-link" @click.stop="openGridToolForReference(sb)">继续添加</button>
                       </div>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
-
             <!-- Grid Tool Dialog -->
             <div v-if="gridDialog" class="overlay" @click.self="gridDialog = false">
               <div class="card grid-tool">
@@ -1418,6 +1412,23 @@
 
           <!-- Sub: Videos -->
           <div v-else-if="prodTab === 'videos'" class="prod-content">
+            <div
+              v-if="isLocalComfyUiVideo"
+              class="card"
+              style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:12px;padding:12px 14px"
+            >
+              <div>
+                <div style="font-size:12px;font-weight:700">MiniMax H3 主模型（UNET）</div>
+                <div class="dim" style="font-size:11px;margin-top:3px">所选模型用于本次本地串行视频生成。</div>
+              </div>
+              <BaseSelect
+                v-model="selectedLocalUnetModel"
+                :options="localH3UnetModelOptions"
+                :disabled="localH3ControlsDisabled"
+                placeholder="选择 UNET 大模型"
+                style="width:370px;max-width:60%"
+              />
+            </div>
             <div class="prod-section-bar">
               <span class="dim" style="font-size:12px">{{ sbs.length }} 个镜头</span>
               <span class="tag mono">{{ shotVidCount }}/{{ sbs.length }} 已生成</span>
@@ -1443,19 +1454,54 @@
                   placeholder="视频比例"
                   style="width:142px"
                 />
+                <BaseSelect
+                  v-if="usesSequentialVideo"
+                  v-model="selectedSequenceStart"
+                  :options="sequenceStartOptions"
+                  placeholder="生成范围"
+                  style="width:190px"
+                />
+                <BaseSelect
+                  v-if="isLocalComfyUiVideo"
+                  v-model="selectedLocalMegapixels"
+                  :options="localMegapixelOptions"
+                  placeholder="百万像素"
+                  style="width:118px"
+                />
+                <BaseSelect
+                  v-if="isLocalComfyUiVideo"
+                  v-model="selectedLocalSteps"
+                  :options="localStepsOptions"
+                  placeholder="采样步数"
+                  style="width:118px"
+                />
+                <BaseSelect
+                  v-if="isLocalComfyUiVideo"
+                  v-model="selectedLocalLoraStrength"
+                  :options="localLoraStrengthOptions"
+                  placeholder="LoRA 强度"
+                  style="width:118px"
+                />
+                <BaseSelect
+                  v-if="isLocalComfyUiVideo"
+                  v-model="selectedLocalContinuityMode"
+                  :options="localContinuityModeOptions"
+                  placeholder="本地串联模式"
+                  style="width:170px"
+                />
                 <button v-if="usesVolcAssetVideoReferences" class="btn btn-sm" :disabled="!volcReferenceStats.total || !volcReferenceStats.missing" @click="syncAllVolcReferences(false)">
                   上传全部参考图
                 </button>
                 <button
                   v-if="usesSequentialVideo"
                   class="btn btn-sm btn-primary"
-                  :disabled="!sbs.length || sequenceBusy"
+                  :disabled="!sbs.length || (sequenceBusy && Number(selectedSequenceStart) === 0)"
                   @click="startSequentialGeneration"
                 >
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 4v16l14-8L5 4Z" /></svg>
                   {{ sequenceBusy ? '串行生成中' : '一键串行生成' }}
                 </button>
-                <button class="btn btn-sm" :disabled="!batchVideoTargetCount" @click="batchVideos">
+                <button v-if="!isLocalComfyUiVideo" class="btn btn-sm" :disabled="!batchVideoTargetCount" @click="batchVideos">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                   {{ batchVideoButtonLabel }}
                 </button>
@@ -1480,7 +1526,6 @@
               </div>
               <div v-if="sequenceCurrentStep" class="video-sequence-step-detail">
                 当前镜头参考 {{ sequenceAssetCount(sequenceCurrentStep) }}/{{ sequenceAssetLimit }}
-                <span v-if="sequenceCurrentStep.first_frame_asset_id || sequenceCurrentStep.firstFrameAssetId"> · 首帧资产 {{ sequenceCurrentStep.first_frame_asset_id || sequenceCurrentStep.firstFrameAssetId }}</span>
                 <span v-if="sequenceCurrentStep.video_generation_id || sequenceCurrentStep.videoGenerationId"> · 视频任务 #{{ sequenceCurrentStep.video_generation_id || sequenceCurrentStep.videoGenerationId }}</span>
               </div>
               <div v-if="sequenceCurrentAssets.length" class="video-sequence-assets">
@@ -1491,7 +1536,7 @@
             </div>
             <div class="prod-grid prod-grid-videos">
               <div v-for="(sb, i) in sbs" :key="sb.id" class="card prod-card">
-                <div class="prod-cover">
+                <div class="prod-cover" :style="videoCoverStyle(sb)">
 	                  <video
 	                    v-if="hasVid(sb)"
 	                    :src="mediaSrc(getDisplayShotVideoUrl(sb))"
@@ -1535,11 +1580,23 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
                   </div>
                   <span class="prod-idx">#{{ String(i+1).padStart(2,'0') }}</span>
+                  <span v-if="hasPreviousVideoReferenceForStoryboard(sb)" class="prod-reference-video-badge" title="Previous shot video reference">&#x5DF2;&#x53C2;&#x8003;&#x4E0A;&#x4E00;&#x5206;&#x955C;&#x89C6;&#x9891;</span>
                   <span v-if="hasComposed(sb)" class="prod-overlay-badge">已合成</span>
                 </div>
                 <div class="prod-info">
                   <div class="prod-desc truncate">{{ sb.description || sb.title || '—' }}</div>
                   <div class="prod-meta-line">{{ sb.shot_type || sb.shotType || '未设景别' }} · {{ sb.duration || 5 }}s</div>
+                  <div class="prod-asset-stats">
+                    <span>角色 {{ storyboardReferenceCounts(sb).characters }}</span>
+                    <span>场景 {{ storyboardReferenceCounts(sb).scenes }}</span>
+                    <span>道具 {{ storyboardReferenceCounts(sb).props }}</span>
+                    <span class="dim">共 {{ storyboardReferenceCounts(sb).references || storyboardReferenceCounts(sb).total || getRefs(sb).length }} 张</span>
+                  </div>
+                  <div class="prod-generation-meta">
+                    <span :class="['generation-status', isVideoBusy(sb.id) && 'is-pending', hasVid(sb) && 'is-ready']">{{ generationStatusLabel(sb) }}</span>
+                    <span>{{ generationElapsedLabel(sb) }}</span>
+                    <span v-if="hasPreviousVideoReferenceForStoryboard(sb)" class="generation-reference-state">&#x5DF2;&#x53C2;&#x8003;&#x4E0A;&#x4E00;&#x5206;&#x955C;&#x89C6;&#x9891;</span>
+                  </div>
                   <div class="prod-dots">
                     <span :class="['dot', hasVideoReferenceInput(sb) && 'ok']" /><span style="font-size:10px">{{ getRefs(sb).length ? `参考图 ${getRefs(sb).length}` : '图' }}</span>
                     <span :class="['dot', hasVid(sb) && 'ok', isVideoBusy(sb.id) && 'pending']" /><span style="font-size:10px">{{ isVideoBusy(sb.id) ? '视频生成中' : '视频' }}</span>
@@ -1613,7 +1670,7 @@
 	                        <button class="btn btn-sm" :disabled="isPreviewingVideoPrompt(sb.id)" @click="refreshVideoPromptDraft(sb)">
 	                          {{ isPreviewingVideoPrompt(sb.id) ? '刷新中' : '刷新传输稿' }}
 	                        </button>
-	                          <button class="btn btn-sm btn-primary" :disabled="isVideoBusy(sb.id) || isPreviewingVideoPrompt(sb.id)" @click="genVid(sb, true)">
+                          <button v-if="!isLocalComfyUiVideo" class="btn btn-sm btn-primary" :disabled="isVideoBusy(sb.id) || isPreviewingVideoPrompt(sb.id)" @click="genVid(sb, true)">
 	                          按此提示词重生成
 	                        </button>
                       </div>
@@ -1622,7 +1679,7 @@
                   <div v-if="videoFailMessage(sb.id)" class="prod-error">{{ videoFailMessage(sb.id) }}</div>
                 </div>
 	                <div class="prod-actions">
-	                  <button class="btn btn-sm" :disabled="isVideoBusy(sb.id)" @click="genVid(sb)">
+                  <button v-if="!isLocalComfyUiVideo" class="btn btn-sm" :disabled="isVideoBusy(sb.id)" @click="genVid(sb)">
 	                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
 	                    {{ isVideoBusy(sb.id) ? '生成中' : (hasVid(sb) ? '重新生成' : '生成视频') }}
 	                  </button>
@@ -1670,7 +1727,7 @@
             </div>
             <div class="prod-grid">
               <div v-for="(sb, i) in sbs" :key="sb.id" class="card prod-card">
-                <div class="prod-cover">
+                <div class="prod-cover" :style="videoCoverStyle(sb)">
                   <video
                     v-if="hasComposed(sb)"
                     :src="mediaSrc(getComposedVideoUrl(sb))"
@@ -1703,6 +1760,8 @@
                   <div class="prod-desc truncate">{{ sb.description || sb.title || '—' }}</div>
                   <div class="prod-meta-line">{{ sb.shot_type || sb.shotType || '未设景别' }} · {{ sb.duration || 5 }}s</div>
                   <div class="prod-dots">
+                    <span class="prod-asset-summary">角色 {{ storyboardReferenceCounts(sb).characters }} · 场景 {{ storyboardReferenceCounts(sb).scenes }} · 道具 {{ storyboardReferenceCounts(sb).props }} · 共 {{ storyboardReferenceCounts(sb).references || storyboardReferenceCounts(sb).total || getRefs(sb).length }} 张</span>
+                    <span class="prod-generation-summary">{{ generationStatusLabel(sb) }} · {{ generationElapsedLabel(sb) }}</span>
                     <span :class="['dot', hasVid(sb) && 'ok']" /><span style="font-size:10px">视频</span>
                     <span :class="['dot', composeAudioMode !== 'tts' || hasTTS(sb) ? 'ok' : '']" /><span style="font-size:10px">{{ composeAudioStatusLabel(sb) }}</span>
                     <span :class="['dot', hasComposed(sb) && 'ok', isPendingCompose(sb.id) && 'pending']" /><span style="font-size:10px">{{ isPendingCompose(sb.id) ? '合成中' : '合成' }}</span>
@@ -1910,14 +1969,17 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { toast } from 'vue-sonner'
 import {
-  Users, MapPin, Video, ImageIcon, Layers, Mic2, FileText, FolderKanban, Clapperboard, Download, Loader2,
+  Users, MapPin, Package, Video, ImageIcon, Layers, Mic2, FileText, FolderKanban, Clapperboard, Download, Loader2,
 } from 'lucide-vue-next'
-import { dramaAPI, episodeAPI, storyboardAPI, characterAPI, sceneAPI, imageAPI, videoAPI, composeAPI, mergeAPI, gridAPI, aiConfigAPI, voicesAPI, assetAPI, agentAPI, preferenceAPI } from '~/composables/useApi'
+import { dramaAPI, episodeAPI, storyboardAPI, characterAPI, sceneAPI, propAPI, imageAPI, videoAPI, composeAPI, mergeAPI, gridAPI, aiConfigAPI, voicesAPI, assetAPI, agentAPI, preferenceAPI } from '~/composables/useApi'
 import { useAgent } from '~/composables/useAgent'
 import BaseSelect from '~/components/BaseSelect.vue'
 import { resolveEffectiveGenerationConfigId } from '~/utils/generation-config'
 import { createGridAssignmentsForShots, normalizeGridAssignments, parseGridLayoutFromFrameType } from '~/utils/grid-state'
 import { imagePath, shouldFinishImageRegenerationPoll } from '~/utils/image-generation-status'
+import { markFinalizedSequenceGeneration, sanitizeSequenceSnapshot, selectLatestVideoGeneration, sequenceGenerationIdsToRefresh, videoGenerationPlaybackPath } from '~/utils/video-sequence-sync.mjs'
+import { assetReferenceCounts, formatElapsed, generationElapsedMs, hasPreviousVideoReference } from '~/utils/video-reference-stats.mjs'
+import { createEpisodeGenerationPreferences, getEpisodeGenerationPreferenceKey, normalizeEpisodeGenerationPreferences } from '~/utils/episode-generation-preferences.mjs'
 
 definePageMeta({ layout: 'studio' })
 
@@ -1925,7 +1987,7 @@ const route = useRoute()
 const dramaId = Number(route.params.id)
 const episodeNumber = Number(route.params.episodeNumber)
 
-const drama = ref(null), episode = ref(null), chars = ref([]), scenes = ref([]), sbs = ref([]), mergeData = ref(null), assets = ref([]), videoGenerations = ref([])
+const drama = ref(null), episode = ref(null), chars = ref([]), scenes = ref([]), props = ref([]), sbs = ref([]), mergeData = ref(null), assets = ref([]), videoGenerations = ref([])
 const panel = ref('script')
 const { running: rn, runningType: rt, error: agentError, errorType: agentErrorType, run: runAgent } = useAgent()
 const exportDesktopBusy = ref(false)
@@ -1940,7 +2002,7 @@ const scriptContent = computed(() => episode.value?.script_content || episode.va
 const epId = computed(() => episode.value?.id || 0)
 const rawLen = computed(() => localRaw.value.replace(/\s/g, '').length || 0)
 const scriptLen = computed(() => localScript.value.replace(/\s/g, '').length || 0)
-const hasExtractedAssets = computed(() => chars.value.length > 0 || scenes.value.length > 0)
+const hasExtractedAssets = computed(() => chars.value.length > 0 || scenes.value.length > 0 || props.value.length > 0)
 const charsVoiced = computed(() => chars.value.filter(c => c.voice_style || c.voiceStyle).length)
 const voiceSampleCount = computed(() => chars.value.filter(c => c.voice_sample_url || c.voiceSampleUrl).length)
 const mergeCandidates = computed(() => sbs.value.filter(s => hasVid(s) || hasComposed(s)))
@@ -1958,11 +2020,18 @@ const characterMaterialDialog = ref(false)
 const characterMaterialInput = ref(null)
 const characterMaterialTargetId = ref(null)
 const uploadingCharacterImage = ref(false)
+const propMaterialInput = ref(null)
+const propMaterialTargetId = ref(null)
+const uploadingPropImageId = ref(null)
+const batchPropImagesRunning = ref(false)
 const prodTabIdx = computed({
   get: () => prodTabDefs.value.findIndex(t => t.id === prodTab.value),
   set: (v) => { prodTab.value = prodTabDefs.value[v]?.id || 'chars' },
 })
-const frameMode = ref('first')
+// The storyboard image panel is multi-reference only.  Keeping the initial
+// value aligned with the sole option prevents a stale persisted/default value
+// from briefly selecting the retired first-frame workflow on page load.
+const frameMode = ref('multi_ref')
 const dubbingEnabled = ref(false)
 const composeAudioMode = ref('original')
 const composeAudioModeOptions = computed(() => [
@@ -1989,8 +2058,6 @@ const fallbackVoiceProfiles = [
 const voiceProfiles = ref(fallbackVoiceProfiles)
 const voiceSelectOptions = computed(() => voiceProfiles.value.map(v => ({ label: `${v.label} · ${v.traits}`, value: v.id })))
 const frameModeOptions = [
-  { label: '仅首帧', value: 'first' },
-  { label: '首尾帧', value: 'first_last' },
   { label: '多图参考', value: 'multi_ref' },
 ]
 const gridLayoutOptions = [
@@ -2023,15 +2090,78 @@ const gptImage2CSizeOptions = [
 ]
 const selectedVideoModelKey = ref('')
 const selectedVideoAspectRatio = ref('16:9')
+// Local MiniMax H3 is intentionally limited to the two isolated serial R2V
+// contracts.  The provider has no first/last-frame or ordinary I2V UI path.
+const selectedLocalContinuityMode = ref('standard_r2v')
+const localContinuityModeOptions = [
+  { label: '标准 R2V 串行', value: 'standard_r2v' },
+  { label: 'Motion Context Plus', value: 'latent_plus' },
+]
+const selectedLocalUnetModel = ref('minimax-h3\\minimax_h3_ref2va_pruned_int8_convrot.safetensors')
+const localH3UnetModelOptions = [
+  { label: 'Ref2VA Pruned INT8 (default)', value: 'minimax-h3\\minimax_h3_ref2va_pruned_int8_convrot.safetensors' },
+  { label: 'FL2VA Pruned INT8', value: 'minimax-h3\\minimax_h3_fl2va_pruned_int8_convrot.safetensors' },
+  { label: 'Hybrid FL2VA/Ref2VA B25-49 INT8', value: 'minimax-h3\\minimax_h3_hybrid_fl2va_ref2va_b25-49-int8.safetensors' },
+]
+// These controls are sent to the serial endpoint and ultimately to the
+// ComfyUI ResolutionSelector/KSampler nodes.  Keep the defaults aligned with
+// the existing H3 workflow (1 MP, 4 turbo steps) while allowing a lower VRAM
+// budget when the user's GPU cannot hold the selected reference set.
+const selectedLocalMegapixels = ref(1)
+const localMegapixelOptions = [
+  { label: '0.2 MP', value: 0.2 },
+  { label: '0.3 MP', value: 0.3 },
+  { label: '0.5 MP', value: 0.5 },
+  { label: '0.75 MP', value: 0.75 },
+  { label: '1.0 MP', value: 1 },
+  { label: '1.5 MP', value: 1.5 },
+  { label: '2.0 MP', value: 2 },
+]
+const selectedLocalSteps = ref(4)
+const localStepsOptions = [
+  { label: '1 步', value: 1 },
+  { label: '2 步', value: 2 },
+  { label: '4 步（Turbo）', value: 4 },
+  { label: '6 步', value: 6 },
+  { label: '8 步', value: 8 },
+  { label: '12 步', value: 12 },
+  { label: '16 步', value: 16 },
+  { label: '20 步', value: 20 },
+]
+const selectedLocalLoraStrength = ref(1)
+const localLoraStrengthOptions = [
+  { label: '0（关闭 LoRA）', value: 0 },
+  { label: '0.25', value: 0.25 },
+  { label: '0.5', value: 0.5 },
+  { label: '0.75', value: 0.75 },
+  { label: '1.0', value: 1 },
+]
+// 0 lets the backend resume from the first missing shot; -1 is an explicit
+// full restart and maps to start_storyboard_number=1 (force boundary 0).
+const selectedSequenceStart = ref(0)
+const sequenceStartOptions = computed(() => [
+  { label: '自动续接（从缺失镜头）', value: 0 },
+  { label: '全部重新生成（从第 1 镜头）', value: -1 },
+  ...sbs.value.map((sb, index) => ({
+    label: `从第 ${Number(sb.storyboard_number || sb.storyboardNumber || index + 1)} 镜头开始`,
+    value: Number(sb.storyboard_number || sb.storyboardNumber || index + 1),
+  })),
+])
+
+// Keep the selected local H3 controls visible while a sequence is running so
+// the active values are always clear, but do not allow changing them mid-run.
+const localH3ControlsDisabled = computed(() => sequenceBusy.value)
 const selectedAudioModelKey = ref('')
 const modelPreferenceKey = 'model-preferences-selected'
 const videoAspectRatioPreferenceKey = 'video-generation-aspect-ratio'
 let modelPreferencesHydrated = false
 let modelPreferenceSave = Promise.resolve()
+let episodeGenerationPreferencesHydratedId = 0
+let episodeGenerationPreferencesApplying = false
+let episodeGenerationPreferenceSave = Promise.resolve()
 const pendingCharImageIds = ref([])
 const pendingSceneImageIds = ref([])
-const pendingShotFrameKeys = ref([])
-const shotFrameRuntimeErrors = ref({})
+const pendingPropImageIds = ref([])
 const imageGenerations = ref([])
 const pendingVideoIds = ref([])
 const pendingComposeIds = ref([])
@@ -2051,7 +2181,10 @@ const videoPromptDrafts = ref({})
 const videoPromptDraftVersions = ref({})
 const previewingVideoPromptIds = ref([])
 const videoSequence = ref(null)
+const finalizedSequenceGenerationIds = new Set()
 let videoSequenceTimer = null
+const generationClock = ref(Date.now())
+let generationClockTimer = null
 
 function parseConfigModels(config) {
   if (!config?.model) return []
@@ -2203,11 +2336,13 @@ function handleImageViewerKeydown(event) {
 
 onMounted(() => {
   window.addEventListener('keydown', handleImageViewerKeydown)
+  generationClockTimer = setInterval(() => { generationClock.value = Date.now() }, 1000)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleImageViewerKeydown)
   if (videoSequenceTimer) clearInterval(videoSequenceTimer)
+  if (generationClockTimer) clearInterval(generationClockTimer)
   if (mergeTimer) clearInterval(mergeTimer)
 })
 
@@ -2218,8 +2353,24 @@ function isPendingSceneImage(id) {
   })
 }
 
+function isPendingPropImage(id) {
+  return pendingPropImageIds.value.some(item => Number(item) === Number(id)) || imageGenerations.value.some(generation => {
+    const propId = Number(generation?.prop_id || generation?.propId || 0)
+    return propId === Number(id) && isImageGenerationPending(generation)
+  })
+}
+
+function assetImageState(kind) {
+  return {
+    character: { field: 'character_id', entities: chars, pendingIds: pendingCharImageIds, label: '角色设定稿', isPending: isPendingCharImage },
+    scene: { field: 'scene_id', entities: scenes, pendingIds: pendingSceneImageIds, label: '场景图片', isPending: isPendingSceneImage },
+    prop: { field: 'prop_id', entities: props, pendingIds: pendingPropImageIds, label: '道具图片', isPending: isPendingPropImage },
+  }[kind]
+}
+
 function imageGenerationFor(kind, id) {
-  const field = kind === 'character' ? 'character_id' : 'scene_id'
+  const field = assetImageState(kind)?.field
+  if (!field) return null
   return imageGenerations.value
     .filter(generation => Number(generation?.[field] || generation?.[toCamel(field)] || 0) === Number(id))
     .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))[0] || null
@@ -2236,30 +2387,32 @@ function imageGenerationError(kind, id) {
 }
 
 function imageBadgeClass(kind, id) {
+  const state = assetImageState(kind)
+  if (!state) return ''
   const generation = imageGenerationFor(kind, id)
-  if (isPendingCharImage(id) && kind === 'character' || isPendingSceneImage(id) && kind === 'scene') return 'is-pending'
+  if (state.isPending(id)) return 'is-pending'
   if (String(generation?.status || '').toLowerCase() === 'failed') return 'is-failed'
-  return kind === 'character'
-    ? (chars.value.find(item => Number(item.id) === Number(id))?.image_url || chars.value.find(item => Number(item.id) === Number(id))?.imageUrl ? 'is-ready' : '')
-    : (scenes.value.find(item => Number(item.id) === Number(id))?.image_url || scenes.value.find(item => Number(item.id) === Number(id))?.imageUrl ? 'is-ready' : '')
+  const entity = state.entities.value.find(item => Number(item.id) === Number(id))
+  return entity?.image_url || entity?.imageUrl ? 'is-ready' : ''
 }
 
 function imageBadgeLabel(kind, id, imagePathValue) {
-  if (isPendingCharImage(id) && kind === 'character' || isPendingSceneImage(id) && kind === 'scene') return '生成中'
+  if (assetImageState(kind)?.isPending(id)) return '生成中'
   if (hasFailedImageGeneration(kind, id)) return '生成失败'
   return imagePathValue ? '已生成' : '待生成'
 }
 
 async function retryOrGenerateImage(kind, id, generate) {
+  const state = assetImageState(kind)
+  if (!state || state.isPending(id)) return
   const failed = imageGenerationFor(kind, id)
   if (!failed || String(failed.status || '').toLowerCase() !== 'failed') {
     await generate()
     return
   }
   try {
-    if (kind === 'character' && !isPendingCharImage(id)) pendingCharImageIds.value.push(id)
-    if (kind === 'scene' && !isPendingSceneImage(id)) pendingSceneImageIds.value.push(id)
-    const entity = kind === 'character' ? chars.value.find(item => Number(item.id) === Number(id)) : scenes.value.find(item => Number(item.id) === Number(id))
+    state.pendingIds.value.push(id)
+    const entity = state.entities.value.find(item => Number(item.id) === Number(id))
     const previousPath = imagePath(entity?.image_url || entity?.imageUrl)
     const result = await imageAPI.retry(failed.id, { ...imageGenerationOptions.value, episode_id: epId.value })
     toast.success('已重新提交图片生成')
@@ -2269,33 +2422,21 @@ async function retryOrGenerateImage(kind, id, generate) {
       generationId,
       entityId: id,
       previousPath,
-      getEntity: entityId => kind === 'character'
-        ? chars.value.find(item => Number(item.id) === Number(entityId))
-        : scenes.value.find(item => Number(item.id) === Number(entityId)),
+      getEntity: entityId => state.entities.value.find(item => Number(item.id) === Number(entityId)),
       clearPending: entityId => {
-        if (kind === 'character') pendingCharImageIds.value = pendingCharImageIds.value.filter(item => Number(item) !== Number(entityId))
-        else pendingSceneImageIds.value = pendingSceneImageIds.value.filter(item => Number(item) !== Number(entityId))
+        state.pendingIds.value = state.pendingIds.value.filter(item => Number(item) !== Number(entityId))
       },
-      failureMessage: kind === 'character' ? '角色设定稿生成失败' : '场景图片生成失败',
-      timeoutMessage: kind === 'character' ? '角色设定稿生成超时' : '场景图片生成超时',
+      failureMessage: `${state.label}生成失败`,
+      timeoutMessage: `${state.label}生成超时`,
     })
   } catch (e) {
-    if (kind === 'character') pendingCharImageIds.value = pendingCharImageIds.value.filter(item => Number(item) !== Number(id))
-    else pendingSceneImageIds.value = pendingSceneImageIds.value.filter(item => Number(item) !== Number(id))
+    state.pendingIds.value = state.pendingIds.value.filter(item => Number(item) !== Number(id))
     toast.error(e.message)
   }
 }
 
 function isImageGenerationPending(generation) {
   return ['pending', 'queued', 'processing', 'running'].includes(String(generation?.status || '').trim().toLowerCase())
-}
-
-function framePendingKey(id, frameType) {
-  return `${id}:${frameType}`
-}
-
-function isPendingShotFrame(id, frameType) {
-  return pendingShotFrameKeys.value.includes(framePendingKey(id, frameType))
 }
 
 function isPendingVideo(id) {
@@ -2376,7 +2517,7 @@ function isNarratorCharacter(char) {
 }
 
 const visualChars = computed(() => chars.value.filter(c => !isNarratorCharacter(c)))
-const productionNeedsStoryboard = computed(() => !['chars', 'scenes'].includes(prodTab.value))
+const productionNeedsStoryboard = computed(() => !['chars', 'scenes', 'props'].includes(prodTab.value))
 
 const lockedImageConfigId = computed(() => episode.value?.image_config_id || episode.value?.imageConfigId || null)
 const lockedVideoConfigId = computed(() => episode.value?.video_config_id || episode.value?.videoConfigId || null)
@@ -2457,13 +2598,24 @@ const usesGrokPublicVideoReferences = computed(() =>
   || isGrokVideoModelName(effectiveVideoModel.value),
 )
 const storyboardBreakdownMode = ref('standard')
+const storyboardBreakdownLanguage = ref('zh')
 const storyboardBreakdownModeOptions = [
+  { label: 'MiniMax H3 · 8-10秒中文', value: 'minimax_local_8s_zh' },
+  { label: 'MiniMax H3 · 8-10秒英文', value: 'minimax_local_8s_en' },
   { label: '普通紧凑', value: 'standard' },
   { label: 'TK海外剧', value: 'tk_overseas' },
   { label: '3分钟内', value: 'grok_3min' },
   { label: '完整拆解', value: 'full' },
 ]
 const storyboardBreakdownPolicy = computed(() => {
+  if (storyboardBreakdownMode.value === 'minimax_local_8s_zh' || storyboardBreakdownMode.value === 'minimax_local_8s_en') {
+    return {
+      mode: 'minimax_local_8s',
+      shot_duration: 8,
+      language: storyboardBreakdownMode.value.endsWith('_en') ? 'en' : 'zh',
+    }
+  }
+  if (storyboardBreakdownMode.value === 'full') return { mode: 'full' }
   if (storyboardBreakdownMode.value === 'tk_overseas') {
     return {
       mode: 'tk_overseas',
@@ -2473,7 +2625,7 @@ const storyboardBreakdownPolicy = computed(() => {
       max_total_duration: 100,
     }
   }
-  if (usesGrokPublicVideoReferences.value && storyboardBreakdownMode.value === 'grok_3min') {
+  if (storyboardBreakdownMode.value === 'grok_3min') {
     return {
       mode: 'grok_3min',
       shot_duration: 10,
@@ -2484,6 +2636,9 @@ const storyboardBreakdownPolicy = computed(() => {
   return null
 })
 const storyboardBreakdownHint = computed(() => {
+  if (storyboardBreakdownMode.value === 'minimax_local_8s_zh') return 'MiniMax H3 本地中文完整拆解：整集全局规划，每镜8-10秒自适应，保留全部剧情和对白，按角色原名绑定声音。'
+  if (storyboardBreakdownMode.value === 'minimax_local_8s_en') return 'MiniMax H3 本地英文说明拆解：说明字段使用英文，原剧本中文对白不翻译，整集全局规划，每镜8-10秒自适应。'
+  if (storyboardBreakdownMode.value === 'full') return '完整拆解：整集全局规划，按真实剧情节拍生成，不删减、不改写、不重复对白。'
   if (storyboardBreakdownMode.value === 'tk_overseas') {
     const sceneCount = scenes.value.length
     const sceneScope = sceneCount
@@ -2499,9 +2654,26 @@ const usesVolcAssetVideoReferences = computed(() => {
   const provider = String(effectiveVideoConfig.value?.provider || '').toLowerCase()
   return provider === 'volcengine' && !usesGrokPublicVideoReferences.value
 })
-const usesSequentialVideo = computed(() => ['mijing', 'grok_openai'].includes(String(effectiveVideoConfig.value?.provider || '').toLowerCase()))
-const sequenceProviderLabel = computed(() => String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'grok_openai' ? 'Grok Imagine ' : '谜镜 ')
-const sequenceReferenceLimitLabel = computed(() => String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'grok_openai' ? '公网/base64参考上限 7 张' : '火山资产上限 9')
+const isLocalComfyUiVideo = computed(() => String(effectiveVideoConfig.value?.provider || '').trim().toLowerCase() === 'comfyui')
+const isAutoDlComfyUiVideo = computed(() => String(effectiveVideoConfig.value?.provider || '').trim().toLowerCase() === 'autodl_comfyui')
+// Mijing, Grok, local ComfyUI and AutoDL ComfyUI all submit one shot at a
+// time.  AutoDL must stay on this same serial entry point so its hosted
+// workflow receives the previous shot's continuity reference in Picture 1;
+// it must never fall through to the batch/legacy video actions.
+const usesSequentialVideo = computed(() => ['mijing', 'grok_openai', 'comfyui', 'autodl_comfyui'].includes(String(effectiveVideoConfig.value?.provider || '').toLowerCase()))
+const sequenceProviderLabel = computed(() => {
+  const provider = String(effectiveVideoConfig.value?.provider || '').toLowerCase()
+  if (provider === 'grok_openai') return 'Grok Imagine '
+  if (provider === 'comfyui') return '本地 MiniMax H3 '
+  if (provider === 'autodl_comfyui') return 'AutoDL MiniMax H3 '
+  return 'eggfans '
+})
+const sequenceReferenceLimitLabel = computed(() => {
+  const provider = String(effectiveVideoConfig.value?.provider || '').toLowerCase()
+  if (provider === 'grok_openai') return '公网/base64参考上限 7 张'
+  if (provider === 'autodl_comfyui') return 'AutoDL R2V 多参考上限 9 张'
+  return 'R2V 多参考上限 9 张'
+})
 const sequenceAssetLimit = computed(() => String(effectiveVideoConfig.value?.provider || '').toLowerCase() === 'grok_openai' ? 7 : 9)
 const sequenceBusy = computed(() => ['queued', 'running', 'paused'].includes(String(videoSequence.value?.status || '').toLowerCase()))
 const sequenceCompletedCount = computed(() => Array.isArray(videoSequence.value?.steps) ? videoSequence.value.steps.filter(step => step.status === 'completed').length : 0)
@@ -2511,7 +2683,10 @@ const sequenceProgress = computed(() => {
 })
 const sequenceCurrentStep = computed(() => {
   const steps = Array.isArray(videoSequence.value?.steps) ? videoSequence.value.steps : []
-  return steps.find(step => ['preparing', 'submitting', 'processing', 'extracting_tail'].includes(step.status))
+  // Local MiniMax H3 never has a tail-extraction phase. Keep the legacy
+  // status out of the active-step selector so an old cached response cannot
+  // make the R2V UI look like the retired first/last-frame workflow.
+  return steps.find(step => ['preparing', 'submitting', 'processing'].includes(step.status))
     || steps.find(step => step.status === 'failed')
     || steps.find(step => step.status === 'pending')
     || null
@@ -2529,8 +2704,11 @@ const imageGenerationOptions = computed(() => ({
 }))
 const videoGenerationOptions = computed(() => ({
   config_id: effectiveVideoConfigId.value || undefined,
-  model: effectiveVideoModel.value || undefined,
+  model: isLocalComfyUiVideo.value ? selectedLocalUnetModel.value : effectiveVideoModel.value || undefined,
   aspect_ratio: selectedVideoAspectRatio.value,
+  megapixels: isLocalComfyUiVideo.value ? selectedLocalMegapixels.value : undefined,
+  steps: isLocalComfyUiVideo.value ? selectedLocalSteps.value : undefined,
+  lora_strength: isLocalComfyUiVideo.value ? selectedLocalLoraStrength.value : undefined,
 }))
 const audioGenerationOptions = computed(() => ({
   config_id: effectiveAudioConfigId.value || undefined,
@@ -2598,6 +2776,106 @@ function savedModelOption(options, value) {
   return options.some(option => option.value === candidate) ? candidate : ''
 }
 
+function episodeGenerationPreferenceKey() {
+  return getEpisodeGenerationPreferenceKey(epId.value)
+}
+
+function currentEpisodeGenerationPreferences() {
+  return createEpisodeGenerationPreferences({
+    selectedImageModelKey: selectedImageModelKey.value,
+    selectedGptImage2CSize: selectedGptImage2CSize.value,
+    selectedVideoModelKey: selectedVideoModelKey.value,
+    selectedVideoAspectRatio: selectedVideoAspectRatio.value,
+    selectedLocalContinuityMode: selectedLocalContinuityMode.value,
+    selectedLocalUnetModel: selectedLocalUnetModel.value,
+    selectedLocalMegapixels: selectedLocalMegapixels.value,
+    selectedLocalSteps: selectedLocalSteps.value,
+    selectedLocalLoraStrength: selectedLocalLoraStrength.value,
+    selectedSequenceStart: selectedSequenceStart.value,
+    selectedAudioModelKey: selectedAudioModelKey.value,
+    frameMode: frameMode.value,
+    composeAudioMode: composeAudioMode.value,
+  })
+}
+
+async function restoreEpisodeGenerationPreferences() {
+  const key = episodeGenerationPreferenceKey()
+  const id = Number(epId.value)
+  if (!key || !id) return
+  let saved = null
+  try {
+    saved = normalizeEpisodeGenerationPreferences(await preferenceAPI.get(key))
+  } catch (error) {
+    console.warn('Failed to load episode generation preferences', error)
+  }
+  if (!saved && typeof window !== 'undefined') {
+    try {
+      saved = normalizeEpisodeGenerationPreferences(JSON.parse(window.localStorage.getItem(key) || 'null'))
+    } catch {}
+  }
+  episodeGenerationPreferencesApplying = true
+  try {
+    if (saved) {
+      const image = savedModelOption(imageConfigSelectOptions.value, saved.selectedImageModelKey)
+      const video = savedModelOption(videoConfigSelectOptions.value, saved.selectedVideoModelKey)
+      const audio = savedModelOption(audioConfigSelectOptions.value, saved.selectedAudioModelKey)
+      if (image) selectedImageModelKey.value = image
+      if (video) selectedVideoModelKey.value = video
+      if (audio) selectedAudioModelKey.value = audio
+      if (gptImage2CSizeOptions.some(option => option.value === saved.selectedGptImage2CSize)) selectedGptImage2CSize.value = saved.selectedGptImage2CSize
+      if (videoAspectRatioOptions.value.some(option => option.value === saved.selectedVideoAspectRatio)) selectedVideoAspectRatio.value = saved.selectedVideoAspectRatio
+      if (localContinuityModeOptions.some(option => option.value === saved.selectedLocalContinuityMode)) selectedLocalContinuityMode.value = saved.selectedLocalContinuityMode
+      if (saved.selectedLocalUnetModel) {
+        if (!localH3UnetModelOptions.some(option => option.value.toLowerCase() === String(saved.selectedLocalUnetModel).toLowerCase())) {
+          const label = String(saved.selectedLocalUnetModel).split(/[\\/]/).pop() || saved.selectedLocalUnetModel
+          localH3UnetModelOptions.push({ label: String(label) + ' (saved)', value: saved.selectedLocalUnetModel })
+        }
+        selectedLocalUnetModel.value = saved.selectedLocalUnetModel
+      }
+      if (Number.isFinite(Number(saved.selectedLocalMegapixels)) && Number(saved.selectedLocalMegapixels) > 0) selectedLocalMegapixels.value = Number(saved.selectedLocalMegapixels)
+      if (Number.isFinite(Number(saved.selectedLocalSteps)) && Number(saved.selectedLocalSteps) > 0) selectedLocalSteps.value = Number(saved.selectedLocalSteps)
+      if (Number.isFinite(Number(saved.selectedLocalLoraStrength)) && Number(saved.selectedLocalLoraStrength) >= 0) selectedLocalLoraStrength.value = Number(saved.selectedLocalLoraStrength)
+      selectedSequenceStart.value = Number(saved.selectedSequenceStart || 0)
+      if (frameModeOptions.some(option => option.value === saved.frameMode)) frameMode.value = saved.frameMode
+      composeAudioMode.value = dubbingEnabled.value ? saved.composeAudioMode : 'original'
+    }
+    episodeGenerationPreferencesHydratedId = id
+  } finally {
+    episodeGenerationPreferencesApplying = false
+  }
+  persistEpisodeGenerationPreferences()
+}
+
+function persistEpisodeGenerationPreferences() {
+  const id = Number(epId.value)
+  const key = episodeGenerationPreferenceKey()
+  if (!key || !id || episodeGenerationPreferencesApplying || episodeGenerationPreferencesHydratedId !== id) return
+  const value = currentEpisodeGenerationPreferences()
+  if (typeof window !== 'undefined') {
+    try { window.localStorage.setItem(key, JSON.stringify(value)) } catch {}
+  }
+  episodeGenerationPreferenceSave = episodeGenerationPreferenceSave
+    .catch(() => undefined)
+    .then(() => preferenceAPI.set(key, value))
+    .catch((error) => console.warn('Failed to save episode generation preferences', error))
+}
+
+watch([
+  selectedImageModelKey,
+  selectedGptImage2CSize,
+  selectedVideoModelKey,
+  selectedVideoAspectRatio,
+  selectedLocalContinuityMode,
+  selectedLocalUnetModel,
+  selectedLocalMegapixels,
+  selectedLocalSteps,
+  selectedLocalLoraStrength,
+  selectedSequenceStart,
+  selectedAudioModelKey,
+  frameMode,
+  composeAudioMode,
+], persistEpisodeGenerationPreferences)
+
 async function restoreModelPreferences() {
   let saved = null
   try {
@@ -2662,7 +2940,7 @@ watch(selectedVideoAspectRatio, (value) => {
 const gridDialog = ref(false)
 const gridStep = ref(0)
 const gridLayout = ref('3x3')
-const gridMode = ref('first_frame')
+const gridMode = ref('multi_ref')
 const gridSelected = ref([])
 const gridSingleTarget = ref(null)
 const gridGenId = ref(null)
@@ -2694,11 +2972,8 @@ const gridStorageKey = computed(() => {
 })
 
 const gridModes = [
-  { id: 'first_frame', label: '首帧', desc: '每格=一个镜头的首帧' },
-  { id: 'first_last', label: '首尾帧', desc: '按所选宫格生成首尾帧参考' },
   { id: 'multi_ref', label: '多参考', desc: '所有格子=同一镜头的参考图' },
 ]
-
 const gridLayoutShape = computed(() => {
   const [rows, cols] = String(gridLayout.value || '3x3').split('x').map(Number)
   return {
@@ -2722,10 +2997,6 @@ const gridSummary = computed(() => {
   }
   if (!gridSelected.value.length) return '请选择镜头'
   const count = gridSelected.value.length
-  if (gridMode.value === 'first_last') {
-    const { rows, cols } = gridLayoutShape.value
-    return `${count} 个镜头 → ${rows}x${cols} 宫格（按首尾帧风格生成，切分后再手动分配）`
-  }
   const { rows, cols } = gridLayoutShape.value
   const cells = rows * cols
   return `${count} 个镜头 → ${rows}x${cols} 宫格（先生成宫格图，切分后再手动分配）`
@@ -2784,8 +3055,6 @@ const gridAssignmentShotOptions = computed(() => [
 ])
 const gridFrameTypeOptions = computed(() => {
   return [
-    { label: '首帧', value: 'first_frame' },
-    { label: '尾帧', value: 'last_frame' },
     { label: '参考图', value: 'reference' },
   ]
 })
@@ -2834,7 +3103,6 @@ function gridModeLabel(frameType) {
   const layoutless = gridModeFromFrameType(frameType)
   const labels = {
     first_frame: '批量首帧',
-    first_last: '批量首尾帧',
     multi_ref: '多参考图',
   }
   return labels[layoutless] || layoutless.replace(/_/g, ' · ') || '宫格图'
@@ -2934,6 +3202,7 @@ const gridBlankStyle = computed(() => {
 function prodStepDone(id) {
   if (id === 'chars') return !visualCharTotal.value || charImgCount.value === visualCharTotal.value
   if (id === 'scenes') return !!scenes.value.length && sceneImgCount.value === scenes.value.length
+  if (id === 'props') return hasExtractedAssets.value && propImgCount.value === props.value.length
   if (id === 'dubbing') return !dubbingEnabled.value || (!!sbs.value.length && isDubbingReady.value)
   if (id === 'shots') return !!sbs.value.length && shotImgCount.value === sbs.value.length
   if (id === 'videos') return !!sbs.value.length && shotVidCount.value === sbs.value.length
@@ -3121,7 +3390,6 @@ function continueGridSplit() {
 
 function getGridPromptShotIds() {
   if (gridMode.value === 'multi_ref') return gridSingleTarget.value ? [gridSingleTarget.value] : []
-  if (gridMode.value === 'first_last') return [...gridSelected.value]
   return gridSelected.value.slice(0, gridTotalCells.value)
 }
 
@@ -3176,7 +3444,6 @@ async function startGridGen() {
     rows = gridAutoLayout.value.rows; cols = gridAutoLayout.value.cols; ids = [gridSingleTarget.value]
   } else {
     rows = gridAutoLayout.value.rows; cols = gridAutoLayout.value.cols; ids = gridSelected.value.slice(0, gridTotalCells.value)
-    if (gridMode.value === 'first_last') ids = [...gridSelected.value]
   }
   gridActiveShotIds.value = ids.filter(Boolean)
   gridActualLayout.value = { rows, cols }
@@ -3224,7 +3491,7 @@ async function pollGridStatus() {
       if (statusLayout?.rows && statusLayout?.cols) {
         gridActualLayout.value = statusLayout
         gridAssignmentsState.value = normalizeGridAssignments(gridAssignmentsState.value, gridActualLayout.value, {
-          frame_type: gridMode.value === 'multi_ref' ? 'reference' : 'first_frame',
+    frame_type: gridMode.value === 'multi_ref' ? 'reference' : 'first_frame',
         })
       }
       if (res.status === 'completed' && res.local_path) {
@@ -3328,20 +3595,15 @@ async function doGridSplit() {
 
 const charImgCount = computed(() => visualChars.value.filter(c => c.image_url || c.imageUrl).length)
 const sceneImgCount = computed(() => scenes.value.filter(s => s.image_url || s.imageUrl).length)
+const propImgCount = computed(() => props.value.filter(prop => prop.image_url || prop.imageUrl).length)
+const pendingPropImageTargets = computed(() => props.value.filter(prop => !(prop.image_url || prop.imageUrl) && !isPendingPropImage(prop.id) && uploadingPropImageId.value !== prop.id))
 const ttsEligibleCount = computed(() => sbs.value.filter(s => hasDialogue(s)).length)
 const ttsGeneratedCount = computed(() => sbs.value.filter(s => hasDialogue(s) && hasTTS(s)).length)
 const ttsPendingCount = computed(() => sbs.value.filter(s => hasDialogue(s) && !hasTTS(s) && !isPendingTTS(s.id)).length)
 const isDubbingRequired = computed(() => dubbingEnabled.value && composeAudioMode.value === 'tts')
 const isDubbingReady = computed(() => !isDubbingRequired.value || !ttsEligibleCount.value || ttsGeneratedCount.value === ttsEligibleCount.value)
 const shotImgCount = computed(() => sbs.value.filter(s => hasVideoReferenceInput(s)).length)
-const shotFirstFrameCount = computed(() => sbs.value.filter(s => getFirstFrame(s)).length)
-const shotLastFrameCount = computed(() => sbs.value.filter(s => getLastFrame(s)).length)
 const shotReferenceCount = computed(() => sbs.value.filter(s => getRefs(s).length).length)
-const missingFirstFrameShots = computed(() => sbs.value.filter(s => !getFirstFrame(s) && !isPendingShotFrame(s.id, 'first_frame')))
-const missingLastFrameShots = computed(() => sbs.value.filter(s => !getLastFrame(s) && !isPendingShotFrame(s.id, 'last_frame')))
-const missingShotFramePairs = computed(() => {
-  return sbs.value.filter(s => (!getFirstFrame(s) && !isPendingShotFrame(s.id, 'first_frame')) || (!getLastFrame(s) && !isPendingShotFrame(s.id, 'last_frame')))
-})
 const shotVidCount = computed(() => sbs.value.filter(s => hasVid(s)).length)
 const grokVideoReferenceReadyCount = computed(() => sbs.value.filter(sb => getGrokVideoReferenceItems(sb).length > 0).length)
 const batchVideoTargets = computed(() => {
@@ -3372,6 +3634,7 @@ const visualCharTotal = computed(() => visualChars.value.length)
 const prodTabDefs = computed(() => [
   { id: 'chars', label: '角色设定稿', icon: Users, badge: visualCharTotal.value ? `${charImgCount.value}/${visualCharTotal.value}` : '' },
   { id: 'scenes', label: '场景图片', icon: MapPin, badge: sceneImgCount.value ? `${sceneImgCount.value}/${scenes.value.length}` : '' },
+  { id: 'props', label: '道具资产', icon: Package, badge: `${propImgCount.value}/${props.value.length}` },
   ...(dubbingEnabled.value ? [{ id: 'dubbing', label: '配音生成', icon: Mic2, badge: '' }] : []),
   { id: 'shots', label: '镜头图片', icon: ImageIcon, badge: shotImgCount.value ? `${shotImgCount.value}/${sbs.value.length}` : '' },
   { id: 'videos', label: '视频生成', icon: Video, badge: shotVidCount.value ? `${shotVidCount.value}/${sbs.value.length}` : '' },
@@ -3380,7 +3643,7 @@ const prodTabDefs = computed(() => [
 
 const mainStageDefs = [
   { id: 'script', label: '剧本', desc: '内容改写与整理', icon: FileText },
-  { id: 'assets', label: '资产', desc: '角色与场景', icon: FolderKanban },
+  { id: 'assets', label: '资产', desc: '角色、场景与道具', icon: FolderKanban },
   { id: 'storyboard', label: '分镜', desc: '镜头制作与合成', icon: Clapperboard },
   { id: 'export', label: '导出', desc: '拼接与成片输出', icon: Download },
 ]
@@ -3403,6 +3666,7 @@ const sidebarSections = computed(() => ([
     items: [
       { key: 'prod:chars', label: '角色设定稿', desc: '', icon: Users, done: prodStepDone('chars') },
       { key: 'prod:scenes', label: '场景图片', desc: '', icon: MapPin, done: prodStepDone('scenes') },
+      { key: 'prod:props', label: '道具资产', desc: '', icon: Package, done: prodStepDone('props') },
       ...(dubbingEnabled.value ? [{ key: 'prod:dubbing', label: '配音生成', desc: '', icon: Mic2, done: prodStepDone('dubbing') }] : []),
       { key: 'prod:shots', label: '镜头图片', desc: '', icon: ImageIcon, done: prodStepDone('shots') },
       { key: 'prod:videos', label: '视频生成', desc: '', icon: Video, done: prodStepDone('videos') },
@@ -3421,7 +3685,7 @@ const sidebarSections = computed(() => ([
 const activeMainStage = computed(() => {
   if (panel.value === 'export') return 'export'
   if (panel.value === 'production') {
-    return ['chars', 'scenes'].includes(prodTab.value) ? 'assets' : 'storyboard'
+    return ['chars', 'scenes', 'props'].includes(prodTab.value) ? 'assets' : 'storyboard'
   }
   if (scriptStep.value <= 1) return 'script'
   if (scriptStep.value <= 3) return 'assets'
@@ -3434,7 +3698,8 @@ function mainStageDone(stageId) {
     const charsReady = !dubbingEnabled.value || (!!chars.value.length && charsVoiced.value === chars.value.length)
     const charImagesReady = !visualCharTotal.value || charImgCount.value === visualCharTotal.value
     const sceneImagesReady = !scenes.value.length || sceneImgCount.value === scenes.value.length
-    return charsReady && charImagesReady && sceneImagesReady
+    const propImagesReady = propImgCount.value === props.value.length
+    return hasExtractedAssets.value && charsReady && charImagesReady && sceneImagesReady && propImagesReady
   }
   if (stageId === 'storyboard') {
     if (!sbs.value.length) return false
@@ -3454,12 +3719,15 @@ function goMainStage(stageId) {
     return
   }
   if (stageId === 'assets') {
-    const hasAssetWorkspace = !!visualCharTotal.value || !!scenes.value.length
+    const hasAssetWorkspace = !!visualCharTotal.value || !!scenes.value.length || !!props.value.length
     const hasPendingAssetGeneration = (visualCharTotal.value && charImgCount.value < visualCharTotal.value)
       || (scenes.value.length && sceneImgCount.value < scenes.value.length)
+      || (props.value.length && propImgCount.value < props.value.length)
     if (panel.value === 'production' || hasPendingAssetGeneration || hasAssetWorkspace) {
       panel.value = 'production'
-      prodTab.value = ['chars', 'scenes'].includes(prodTab.value) ? prodTab.value : 'chars'
+      prodTab.value = ['chars', 'scenes', 'props'].includes(prodTab.value)
+        ? prodTab.value
+        : (visualCharTotal.value ? 'chars' : (scenes.value.length ? 'scenes' : 'props'))
       return
     }
     panel.value = 'script'
@@ -3490,10 +3758,11 @@ const activeSubSteps = computed(() => {
   }
   if (activeMainStage.value === 'assets') {
     return [
-      { key: 'script:extract', label: '提取角色场景', done: hasExtractedAssets.value },
+      { key: 'script:extract', label: '提取角色场景道具', done: hasExtractedAssets.value },
       ...(dubbingEnabled.value ? [{ key: 'script:voice', label: '分配音色', done: !!chars.value.length && charsVoiced.value === chars.value.length }] : []),
       { key: 'prod:chars', label: '角色设定稿', done: !visualCharTotal.value || charImgCount.value === visualCharTotal.value },
       { key: 'prod:scenes', label: '场景图片', done: !scenes.value.length || sceneImgCount.value === scenes.value.length },
+      { key: 'prod:props', label: '道具资产', done: prodStepDone('props') },
     ]
   }
   if (activeMainStage.value === 'storyboard') {
@@ -3580,20 +3849,8 @@ function goSubStep(key) {
   panel.value = 'export'
 }
 
-const pipelineProgress = computed(() => {
-  let p = 0
-  if (rawContent.value) p++
-  if (scriptContent.value) p++
-  if (hasExtractedAssets.value) p++
-  if (!dubbingEnabled.value || charsVoiced.value) p++
-  if (sbs.value.length) p++
-  if (!dubbingEnabled.value || (sbs.value.length && isDubbingReady.value)) p++
-  if (sbs.value.some(s => s.composed_image || s.composedImage)) p++
-  if (sbs.value.some(s => hasVid(s))) p++
-  if (mergeCandidateCount.value > 0 && composedCount.value === mergeCandidateCount.value) p++
-  if (mergeUrl.value) p++
-  return p
-})
+const pipelineTotal = computed(() => sidebarSections.value.reduce((total, section) => total + section.items.length, 0))
+const pipelineProgress = computed(() => sidebarSections.value.reduce((total, section) => total + section.items.filter(item => item.done).length, 0))
 
 const currentStageLabel = computed(() => {
   if (panel.value === 'script') return `剧本阶段 · ${stepLabels[scriptStep.value]}`
@@ -3714,11 +3971,17 @@ async function refresh() {
     const ep = drama.value.episodes?.find(e => (e.episode_number || e.episodeNumber) === episodeNumber)
     if (ep) {
       episode.value = ep
-      storyboardBreakdownMode.value = String(ep.breakdown_mode || ep.breakdownMode || 'standard') || 'standard'
+      const storedBreakdownMode = String(ep.breakdown_mode || ep.breakdownMode || 'standard') || 'standard'
+      const storedBreakdownLanguage = String(ep.breakdown_language || ep.breakdownLanguage || 'zh').toLowerCase() === 'en' ? 'en' : 'zh'
+      storyboardBreakdownMode.value = storedBreakdownMode === 'minimax_local_8s'
+        ? `minimax_local_8s_${storedBreakdownLanguage}`
+        : storedBreakdownMode
+      storyboardBreakdownLanguage.value = storedBreakdownLanguage
       dubbingEnabled.value = ep.dubbing_enabled === true || ep.dubbing_enabled === 1 || ep.dubbingEnabled === true
       if (!dubbingEnabled.value) composeAudioMode.value = 'original'
       try { chars.value = await episodeAPI.characters(ep.id) } catch { chars.value = [] }
       try { scenes.value = await episodeAPI.scenes(ep.id) } catch { scenes.value = [] }
+      try { props.value = await episodeAPI.props(ep.id) } catch { props.value = [] }
       sbs.value = await episodeAPI.storyboards(ep.id)
       try {
         const rows = await imageAPI.list({ drama_id: dramaId })
@@ -3752,42 +4015,53 @@ async function refresh() {
 }
 
 async function refreshExtractedAssets() {
-  const [nextChars, nextScenes] = await Promise.all([
+  const [nextChars, nextScenes, nextProps] = await Promise.all([
     episodeAPI.characters(epId.value),
     episodeAPI.scenes(epId.value),
+    episodeAPI.props(epId.value),
   ])
   chars.value = Array.isArray(nextChars) ? nextChars : []
   scenes.value = Array.isArray(nextScenes) ? nextScenes : []
-  return { chars: chars.value.length, scenes: scenes.value.length }
+  props.value = Array.isArray(nextProps) ? nextProps : []
+  return { chars: chars.value.length, scenes: scenes.value.length, props: props.value.length }
 }
 
 function extractedAssetCounts(result) {
   const text = String(result?.text || result?.data?.text || '')
   const counts = text.match(/\d+/g)?.map(Number) || []
-  return counts.length >= 2 ? { chars: counts[0], scenes: counts[1] } : null
+  return counts.length >= 2 ? { chars: counts[0], scenes: counts[1], props: counts[2] || 0 } : null
 }
 
 async function refreshExtractedAssetsUntilSettled(previousCounts, result) {
   const expected = extractedAssetCounts(result)
   for (let attempt = 0; attempt < 12; attempt++) {
     const current = await refreshExtractedAssets()
-    const changed = current.chars !== previousCounts.chars || current.scenes !== previousCounts.scenes
+    const changed = current.chars !== previousCounts.chars || current.scenes !== previousCounts.scenes || current.props !== previousCounts.props
     const latestResultVisible = expected
       && current.chars >= expected.chars
       && current.scenes >= expected.scenes
+      && current.props >= expected.props
     if (changed || latestResultVisible || attempt === 11) return current
     await sleep(350)
   }
-  return { chars: chars.value.length, scenes: scenes.value.length }
+  return { chars: chars.value.length, scenes: scenes.value.length, props: props.value.length }
 }
 
 async function selectStoryboardBreakdownMode(mode) {
   const next = String(mode || 'standard')
-  storyboardBreakdownMode.value = next
+  const isMiniMaxLanguageMode = next === 'minimax_local_8s_zh' || next === 'minimax_local_8s_en'
+  storyboardBreakdownMode.value = isMiniMaxLanguageMode ? next : next
+  if (isMiniMaxLanguageMode) storyboardBreakdownLanguage.value = next.endsWith('_en') ? 'en' : 'zh'
   if (!epId.value) return
   try {
-    await episodeAPI.update(epId.value, { breakdown_mode: next })
-    if (episode.value) episode.value.breakdown_mode = next
+    await episodeAPI.update(epId.value, {
+      breakdown_mode: isMiniMaxLanguageMode ? 'minimax_local_8s' : next,
+      breakdown_language: storyboardBreakdownLanguage.value,
+    })
+    if (episode.value) {
+      episode.value.breakdown_mode = isMiniMaxLanguageMode ? 'minimax_local_8s' : next
+      episode.value.breakdown_language = storyboardBreakdownLanguage.value
+    }
   } catch (e) {
     toast.error(`保存拆解模式失败：${e.message}`)
   }
@@ -3815,12 +4089,41 @@ async function setDubbingEnabled(enabled) {
 async function loadVideoSequence() {
   if (!epId.value) return
   try {
-    videoSequence.value = await videoAPI.getSequentialByEpisode(epId.value)
+    const snapshot = await videoAPI.getSequentialByEpisode(epId.value)
+    videoSequence.value = sanitizeSequenceSnapshot(snapshot)
+    syncLocalSequenceControls(videoSequence.value)
     await syncSequenceVideoGenerations(videoSequence.value)
     syncVideoSequencePolling()
   } catch {
     videoSequence.value = null
   }
+}
+
+function syncLocalSequenceControls(sequence) {
+  if (!sequence) return
+  const provider = String(sequence.provider || '').trim().toLowerCase()
+  if (provider && provider !== 'comfyui') return
+
+  const model = String(sequence.model || '').trim()
+  if (model) {
+    if (!localH3UnetModelOptions.some(option => option.value.toLowerCase() === model.toLowerCase())) {
+      const label = model.split(/[\/]/).pop() || model
+      localH3UnetModelOptions.push({ label: label + ' (active)', value: model })
+    }
+    selectedLocalUnetModel.value = model
+  }
+
+  const megapixels = Number(sequence.megapixels)
+  if (Number.isFinite(megapixels) && megapixels > 0) selectedLocalMegapixels.value = megapixels
+
+  const samplingSteps = Number(sequence.sampling_steps ?? sequence.samplingSteps)
+  if (Number.isFinite(samplingSteps) && samplingSteps > 0) selectedLocalSteps.value = samplingSteps
+
+  const loraStrength = Number(sequence.lora_strength ?? sequence.loraStrength)
+  if (Number.isFinite(loraStrength) && loraStrength >= 0) selectedLocalLoraStrength.value = loraStrength
+
+  const continuityMode = String(sequence.continuity_mode ?? sequence.continuityMode ?? '').trim()
+  if (continuityMode) selectedLocalContinuityMode.value = continuityMode
 }
 
 function upsertVideoGeneration(generation) {
@@ -3835,7 +4138,10 @@ function upsertVideoGeneration(generation) {
 
 async function syncSequenceVideoGenerations(sequence) {
   const steps = Array.isArray(sequence?.steps) ? sequence.steps : []
-  const generationIds = [...new Set(steps
+  const localComfyUi = String(sequence?.provider || '').trim().toLowerCase() === 'comfyui'
+  const generationIds = localComfyUi
+    ? sequenceGenerationIdsToRefresh(steps, videoGenerations.value, finalizedSequenceGenerationIds)
+    : [...new Set(steps
     .map(step => Number(step.video_generation_id || step.videoGenerationId || 0))
     .filter(id => id > 0)
     .filter(id => {
@@ -3845,7 +4151,15 @@ async function syncSequenceVideoGenerations(sequence) {
   if (!generationIds.length) return
   const results = await Promise.allSettled(generationIds.map(id => videoAPI.get(id)))
   results.forEach((result) => {
-    if (result.status === 'fulfilled') upsertVideoGeneration(result.value)
+    if (result.status !== 'fulfilled') return
+    upsertVideoGeneration(result.value)
+    if (localComfyUi) {
+      for (const step of steps) {
+        if (Number(step.video_generation_id || step.videoGenerationId || 0) === Number(result.value?.id)) {
+          markFinalizedSequenceGeneration(step, finalizedSequenceGenerationIds)
+        }
+      }
+    }
   })
 }
 
@@ -3857,9 +4171,10 @@ function syncVideoSequencePolling() {
   if (!sequenceBusy.value || !videoSequence.value?.id) return
   videoSequenceTimer = setInterval(async () => {
     try {
-      const nextSequence = await videoAPI.getSequential(videoSequence.value.id)
+      const nextSequence = sanitizeSequenceSnapshot(await videoAPI.getSequential(videoSequence.value.id))
       await syncSequenceVideoGenerations(nextSequence)
       videoSequence.value = nextSequence
+      syncLocalSequenceControls(nextSequence)
       if (!sequenceBusy.value) {
         clearInterval(videoSequenceTimer)
         videoSequenceTimer = null
@@ -3870,15 +4185,28 @@ function syncVideoSequencePolling() {
 }
 
 async function startSequentialGeneration() {
-  if (!usesSequentialVideo.value || sequenceBusy.value) return
+  if (!usesSequentialVideo.value || !sbs.value.length) return
   try {
-    videoSequence.value = await videoAPI.startSequential({
+    const startSelection = Number(selectedSequenceStart.value)
+    if (sequenceBusy.value && startSelection === 0) {
+      toast.info('当前串行任务正在运行，请先选择“全部重新生成”或指定起始镜头')
+      return
+    }
+    const request = {
       drama_id: dramaId,
       episode_id: epId.value,
       config_id: effectiveVideoConfigId.value || undefined,
-      model: effectiveVideoModel.value || undefined,
+      model: isLocalComfyUiVideo.value ? selectedLocalUnetModel.value : effectiveVideoModel.value || undefined,
       aspect_ratio: selectedVideoAspectRatio.value,
-    })
+      megapixels: isLocalComfyUiVideo.value ? selectedLocalMegapixels.value : undefined,
+      steps: isLocalComfyUiVideo.value ? selectedLocalSteps.value : undefined,
+      lora_strength: isLocalComfyUiVideo.value ? selectedLocalLoraStrength.value : undefined,
+      continuity_mode: isLocalComfyUiVideo.value ? selectedLocalContinuityMode.value : undefined,
+    }
+    if (startSelection === -1) request.start_storyboard_number = 1
+    else if (startSelection > 0) request.start_storyboard_number = startSelection
+    videoSequence.value = await videoAPI.startSequential(request)
+    syncLocalSequenceControls(videoSequence.value)
     syncVideoSequencePolling()
     toast.success(`已启动${sequenceProviderLabel.value}串行生成，将按镜头顺序自动衔接`)
   } catch (e) {
@@ -3889,6 +4217,7 @@ async function startSequentialGeneration() {
 async function retrySequentialGeneration(runId) {
   try {
     videoSequence.value = await videoAPI.retrySequential(runId)
+    syncLocalSequenceControls(videoSequence.value)
     syncVideoSequencePolling()
     toast.success('已从失败镜头继续生成')
   } catch (e) { toast.error(e.message) }
@@ -3897,6 +4226,7 @@ async function retrySequentialGeneration(runId) {
 async function cancelSequentialGeneration(runId) {
   try {
     videoSequence.value = await videoAPI.cancelSequential(runId)
+    syncLocalSequenceControls(videoSequence.value)
     syncVideoSequencePolling()
     toast.info('已停止串行生成，已完成镜头不会回退')
   } catch (e) { toast.error(e.message) }
@@ -3911,9 +4241,19 @@ function sequenceStatusClass(status) {
 }
 function sequenceStatusDetail(sequence) {
   const step = sequenceCurrentStep.value
-  if (!step) return sequence.status === 'completed' ? '全部镜头已按尾帧衔接完成。' : '等待任务处理。'
+  const sequenceError = String(sequence?.error_msg || sequence?.errorMsg || '').trim()
+  const stepError = String(step?.error_msg || step?.errorMsg || '').trim()
+  if (sequenceError || stepError || String(step?.status || '').toLowerCase() === 'failed') {
+    return `失败原因：${sequenceError || stepError || '视频任务失败，但没有返回具体错误'}`
+  }
+  if (!step) {
+    if (String(sequence?.status || '').toLowerCase() !== 'completed') return '等待任务处理。'
+    return isLocalComfyUiVideo.value
+      ? '全部镜头已按 R2V 多参考规则完成串联。'
+      : '全部镜头已按尾帧衔接完成。'
+  }
   const number = step.storyboard_number || step.storyboardNumber || Number(step.step_index ?? step.stepIndex ?? 0) + 1
-  const phase = ({ preparing: '正在准备参考资产', submitting: '正在提交视频任务', processing: '正在等待视频结果', extracting_tail: sequenceProviderLabel.value === 'Grok Imagine ' ? '正在提取尾帧并上传公网图床' : '正在提取尾帧并上传火山资产' })[step.status] || '等待处理'
+  const phase = ({ preparing: '正在准备 R2V 参考资产', submitting: '正在提交 R2V 视频任务', processing: '正在等待视频结果' })[step.status] || '等待处理'
   return `镜头 ${number}：${phase}`
 }
 function sequenceAssetCount(step) {
@@ -3939,7 +4279,11 @@ async function loadVolcAssets() {
 
 async function loadVideoGenerations() {
   try {
-    videoGenerations.value = await videoAPI.list({ drama_id: dramaId })
+    const rows = await videoAPI.list({ drama_id: dramaId })
+    // The backend keeps historical generations for audit.  Playback must
+    // select only the current storyboard revision and the currently selected
+    // local R2V pipeline; old FL2VA/first-last rows stay hidden.
+    videoGenerations.value = Array.isArray(rows) ? rows : []
   } catch {
     videoGenerations.value = []
   }
@@ -3973,10 +4317,10 @@ async function doRewrite() {
 
     await refresh()
     scriptStep.value = 2
-    const previousCounts = { chars: chars.value.length, scenes: scenes.value.length }
+    const previousCounts = { chars: chars.value.length, scenes: scenes.value.length, props: props.value.length }
     const extracted = await runAgent(
       'extractor',
-      '请从刚刚改写并保存的剧本中提取所有角色和场景信息，提取时自动与项目已有数据进行去重合并',
+      '请从刚刚改写并保存的剧本中提取所有角色、场景和道具信息，提取时自动与项目已有数据进行去重合并',
       dramaId,
       epId.value,
       undefined,
@@ -3985,7 +4329,7 @@ async function doRewrite() {
     if (extracted) await refreshExtractedAssetsUntilSettled(previousCounts, extracted)
     await refresh()
     scriptStep.value = 2
-    if (extracted) toast.success(`已自动提取 ${chars.value.length} 个角色、${scenes.value.length} 个场景`)
+    if (extracted) toast.success(`已自动提取 ${chars.value.length} 个角色、${scenes.value.length} 个场景、${props.value.length} 个道具`)
   } catch (e) {
     toast.error(e.message)
   }
@@ -4004,13 +4348,13 @@ async function skipRewrite() {
 }
 async function doExtract() {
   try {
-    const previousCounts = { chars: chars.value.length, scenes: scenes.value.length }
+    const previousCounts = { chars: chars.value.length, scenes: scenes.value.length, props: props.value.length }
     const extractionSource = extractionSourceForCurrentContent()
     if (extractionSource === 'raw') await saveRaw()
     else await saveScr()
     const extracted = await runAgent(
       'extractor',
-      '请从剧本中提取所有角色和场景信息，提取时自动与项目已有数据进行去重合并',
+      '请从剧本中提取所有角色、场景和道具信息，提取时自动与项目已有数据进行去重合并',
       dramaId,
       epId.value,
       undefined,
@@ -4020,7 +4364,7 @@ async function doExtract() {
     await refreshExtractedAssetsUntilSettled(previousCounts, extracted)
     await refresh()
     scriptStep.value = 2
-    toast.success(`已提取 ${chars.value.length} 个角色、${scenes.value.length} 个场景`)
+    toast.success(`已提取 ${chars.value.length} 个角色、${scenes.value.length} 个场景、${props.value.length} 个道具`)
   } catch (e) {
     toast.error(e.message)
   }
@@ -4050,9 +4394,11 @@ function doBreakdown() {
     : '本集场景数量尚未在前端统计，必须以 read_storyboard_context 返回的实际场景列表为准'
   const policyText = storyboardBreakdownMode.value === 'tk_overseas'
     ? `当前选择 TK海外剧拆解：${sceneScope}；场景数量仅以当前集实际提取结果和 read_storyboard_context 返回内容为准，绝对不得假设固定为三个场景，也不得自行新增或删减场景。英文对白保留原文，不读取括号中文翻译；逐个覆盖当前集所有场景，保留原剧本动作、对白和结果。总时长目标60-90秒，允许因剧情完整度浮动到100秒；不设固定镜头数量，按实际叙事节拍拆分，每镜通常4-10秒，连续动作或较长对白确有需要时可使用11-15秒。`
-    : policy
+    : storyboardBreakdownMode.value === 'grok_3min'
       ? '当前选择 Grok 10s · 3分钟内拆解：请压缩主线，最多18个镜头，每个镜头10秒，总时长不超过180秒。'
-      : storyboardBreakdownMode.value === 'full'
+      : storyboardBreakdownMode.value.startsWith('minimax_local_8s_')
+        ? storyboardBreakdownHint.value
+        : storyboardBreakdownMode.value === 'full'
         ? '当前选择完整拆解：保留剧本细节，但不得新增剧本外剧情。'
         : '当前选择普通紧凑拆解：简单动作、反应和环境建立镜头使用4-5秒，关键对白或连续动作使用5-7秒；只在叙事重点明显变化时切镜，不要凑镜头数量。'
   runAgent(
@@ -4066,6 +4412,7 @@ function doBreakdown() {
       video_provider: cfg?.provider || '',
       video_model_label: label,
       storyboard_mode: storyboardBreakdownMode.value,
+      storyboard_language: storyboardBreakdownMode.value.endsWith('_en') ? 'en' : 'zh',
       storyboard_policy: policy || undefined,
     },
   )
@@ -4218,8 +4565,86 @@ async function batchSceneImages() {
       toast.error(e.message)
     }
   }
-  if (submitted) toast.success(`已提交 ${submitted} 个场景图片任务，谜镜将按顺序生成`)
+  if (submitted) toast.success(`已提交 ${submitted} 个场景图片任务，eggfans将按顺序生成`)
   await refresh()
+}
+
+async function submitPropImage(id) {
+  const prop = props.value.find(item => Number(item.id) === Number(id))
+  const previousPath = imagePath(prop?.image_url || prop?.imageUrl)
+  try {
+    const result = await propAPI.generateImage(id, epId.value, imageGenerationOptions.value)
+    const generationId = result?.image_generation_id || result?.imageGenerationId
+    if (!generationId) throw new Error('道具图片任务未返回任务 ID')
+    void pollAssetImageGeneration({
+      generationId,
+      entityId: id,
+      previousPath,
+      getEntity: entityId => props.value.find(item => Number(item.id) === Number(entityId)),
+      clearPending: entityId => { pendingPropImageIds.value = pendingPropImageIds.value.filter(item => Number(item) !== Number(entityId)) },
+      failureMessage: '道具图片生成失败',
+      timeoutMessage: '道具图片生成超时',
+    })
+    return true
+  } catch (error) {
+    pendingPropImageIds.value = pendingPropImageIds.value.filter(item => Number(item) !== Number(id))
+    toast.error(`${prop?.name || '道具'}：${error.message}`)
+    return false
+  }
+}
+
+async function genPropImg(id) {
+  if (isPendingPropImage(id) || uploadingPropImageId.value === id) return
+  pendingPropImageIds.value.push(id)
+  if (await submitPropImage(id)) toast.success('道具图片生成中')
+  await refresh()
+}
+
+async function batchPropImages() {
+  if (batchPropImagesRunning.value) return
+  const ids = pendingPropImageTargets.value.map(prop => prop.id)
+  if (!ids.length) { toast.info('没有待生成的道具图片'); return }
+  batchPropImagesRunning.value = true
+  pendingPropImageIds.value = [...new Set([...pendingPropImageIds.value, ...ids])]
+  try {
+    let submitted = 0
+    for (const id of ids) {
+      if (await submitPropImage(id)) submitted += 1
+    }
+    if (submitted) toast.success(`已提交 ${submitted} 个道具图片任务`)
+    await refresh()
+  } finally {
+    batchPropImagesRunning.value = false
+  }
+}
+
+function choosePropMaterial(prop) {
+  if (!prop?.id || uploadingPropImageId.value || isPendingPropImage(prop.id)) return
+  propMaterialTargetId.value = prop.id
+  propMaterialInput.value?.click()
+}
+
+async function handlePropMaterialFile(event) {
+  const input = event?.target
+  const file = input?.files?.[0]
+  if (input) input.value = ''
+  const propId = Number(propMaterialTargetId.value)
+  if (!file || !propId || uploadingPropImageId.value || isPendingPropImage(propId)) return
+  if (!/\.(png|jpe?g|webp)$/i.test(file.name)) {
+    toast.warning('请选择 JPG、PNG 或 WebP 道具图片')
+    return
+  }
+  uploadingPropImageId.value = propId
+  try {
+    await propAPI.uploadImage(propId, file)
+    await refresh()
+    toast.success('道具图片已上传')
+  } catch (error) {
+    toast.error(error.message)
+  } finally {
+    uploadingPropImageId.value = null
+    propMaterialTargetId.value = null
+  }
 }
 
 const IGNORE_TTS_SPEAKERS = /^(环境音|环境声|音效|效果音|sfx|sound ?effect|bgm|背景音|背景音乐|ambient)$/i
@@ -4341,12 +4766,7 @@ async function batchShotTTS() {
   }
 }
 
-function getFirstFrame(s) { return s?.first_frame_image || s?.firstFrameImage || null }
-function getLastFrame(s) { return s?.last_frame_image || s?.lastFrameImage || null }
-function hasShotFrame(s, frameType) {
-  return frameType === 'first_frame' ? !!getFirstFrame(s) : !!getLastFrame(s)
-}
-function getStoryboardCover(s) { return s?.composed_image || s?.composedImage || getFirstFrame(s) || getLastFrame(s) || getRefs(s)[0] || null }
+function getStoryboardCover(s) { return s?.composed_image || s?.composedImage || getRefs(s)[0] || s?.image_url || s?.imageUrl || null }
 function getVideoUrl(s) { return s?.video_url || s?.videoUrl || null }
 function getComposedVideoUrl(s) { return s?.composed_video_url || s?.composedVideoUrl || null }
 function isCompletedGeneration(generation) {
@@ -4361,13 +4781,30 @@ function getGenerationLocalPath(generation) {
 function getDisplayShotVideoUrl(s) {
   const latest = latestVideoGeneration(s?.id)
   if (latest) return isCompletedGeneration(latest) ? getGenerationVideoUrl(latest) : ''
+  // Local H3 rows are kept as immutable history. Once a shot has any local
+  // generation history, never fall back to the storyboard's legacy video_url:
+  // that URL may point at an old first/last-frame run or an older storyboard
+  // revision that was intentionally filtered above.
+  if (isLocalComfyUiVideo.value && hasVideoGenerationHistory(s?.id)) return ''
   return getVideoUrl(s)
+}
+// Keep the preview canvas in the same orientation as the current generation.
+// The media itself already carries the requested dimensions (for example
+// 544x960 for 9:16); a fixed 16:9 cover used to crop that portrait output and
+// make it look like a landscape render in the Studio UI.
+function videoCoverStyle(s) {
+  const latest = latestVideoGeneration(s?.id)
+  const ratio = String(latest?.aspect_ratio || latest?.aspectRatio || selectedVideoAspectRatio.value || '16:9').trim()
+  const match = ratio.match(/^(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)$/)
+  return match ? { aspectRatio: `${match[1]} / ${match[2]}` } : undefined
 }
 function getDownloadShotVideoUrl(s) {
   const localGeneration = latestLocalCompletedVideoGeneration(s?.id)
   return getGenerationLocalPath(localGeneration)
 }
-function getGenerationVideoUrl(generation) { return generation?.video_url || generation?.videoUrl || null }
+function getGenerationVideoUrl(generation) {
+  return videoGenerationPlaybackPath(generation)
+}
 function mediaSrc(value) {
   const url = String(value || '').trim()
   if (!url) return ''
@@ -4380,14 +4817,80 @@ function hasImg(s) { return !!getStoryboardCover(s) }
 function hasVideoReferenceInput(s) { return hasImg(s) || getRefs(s).length > 0 }
 function hasVid(s) {
   const latest = latestVideoGeneration(s?.id)
-  return latest ? isCompletedGeneration(latest) && !!getGenerationVideoUrl(latest) : !!getVideoUrl(s)
+  if (latest) return isCompletedGeneration(latest) && !!getGenerationVideoUrl(latest)
+  return isLocalComfyUiVideo.value && hasVideoGenerationHistory(s?.id) ? false : !!getVideoUrl(s)
+}
+
+function hasVideoGenerationHistory(storyboardId) {
+  return videoGenerations.value.some(item => Number(item.storyboard_id || item.storyboardId) === Number(storyboardId))
 }
 function hasComposed(s) { return !!getComposedVideoUrl(s) }
 
 function latestVideoGeneration(storyboardId) {
-  return videoGenerations.value
-    .filter(item => (item.storyboard_id || item.storyboardId) === storyboardId)
-    .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0] || null
+  const storyboard = sbs.value.find(item => Number(item.id) === Number(storyboardId))
+  const provider = String(effectiveVideoConfig.value?.provider || '').trim().toLowerCase()
+  const continuityMode = provider === 'comfyui' ? selectedLocalContinuityMode.value : ''
+  const candidates = videoGenerations.value.filter(item => Number(item.storyboard_id || item.storyboardId) === Number(storyboardId))
+  return selectLatestVideoGeneration(candidates, storyboard, provider, continuityMode)
+}
+
+function latestSequenceStepForStoryboard(storyboardId) {
+  const steps = Array.isArray(videoSequence.value?.steps) ? videoSequence.value.steps : []
+  return steps
+    .filter(step => Number(step?.storyboard_id || step?.storyboardId) === Number(storyboardId))
+    .sort((a, b) => Number(b?.step_index ?? b?.stepIndex ?? 0) - Number(a?.step_index ?? a?.stepIndex ?? 0))[0] || null
+}
+
+function getSequenceStepForStoryboard(storyboardId) {
+  const current = latestSequenceStepForStoryboard(storyboardId)
+  if (current) return current
+  const rows = Array.isArray(videoSequence.value?.steps) ? videoSequence.value.steps : []
+  return rows.find(step => Number(step?.storyboard_id || step?.storyboardId) === Number(storyboardId)) || null
+}
+
+function storyboardReferenceCounts(sb) {
+  const generation = latestVideoGeneration(sb?.id)
+  const step = getSequenceStepForStoryboard(sb?.id)
+  return assetReferenceCounts({
+    storyboard: sb,
+    step,
+    generation,
+    characters: chars.value,
+    scenes: scenes.value,
+    props: props.value,
+  })
+}
+
+function latestVideoOrSequenceRecord(storyboardId) {
+  return latestVideoGeneration(storyboardId) || latestSequenceStepForStoryboard(storyboardId)
+}
+
+function hasPreviousVideoReferenceForStoryboard(storyboard) {
+  const storyboardIndex = sbs.value.findIndex(item => Number(item?.id) === Number(storyboard?.id))
+  return isLocalComfyUiVideo.value
+    && storyboardIndex > 0
+    && hasPreviousVideoReference(latestVideoGeneration(storyboard?.id))
+}
+
+function generationElapsedLabel(sb) {
+  const record = latestVideoOrSequenceRecord(sb?.id)
+  if (!record) return '未生成'
+  const status = String(record.status || '').trim().toLowerCase()
+  const elapsed = formatElapsed(generationElapsedMs(record, generationClock.value))
+  if (['pending', 'queued', 'processing', 'running'].includes(status)) return `生成中 ${elapsed}`
+  if (['preparing', 'submitting'].includes(status)) return `生成中 ${elapsed}`
+  if (status === 'completed') return `耗时 ${elapsed}`
+  if (status === 'skipped') return `已复用 · ${elapsed}`
+  if (status === 'failed') return `失败 · ${elapsed}`
+  if (status === 'cancelled') return `已停止 · ${elapsed}`
+  return elapsed === '00:00' ? '未生成' : `耗时 ${elapsed}`
+}
+
+function generationStatusLabel(sb) {
+  const record = latestVideoOrSequenceRecord(sb?.id)
+  if (!record) return '待生成'
+  const status = String(record.status || '').trim().toLowerCase()
+  return ({ pending: '排队中', queued: '排队中', preparing: '生成中', submitting: '生成中', processing: '生成中', running: '生成中', completed: '已完成', skipped: '已复用', failed: '失败', cancelled: '已停止' })[status] || '处理中'
 }
 
 function latestVideoPrompt(storyboardId) {
@@ -4558,15 +5061,13 @@ function getVideoReferenceUrls(sb) {
     if (!path || refs.includes(path)) return
     refs.push(path)
   }
-  const first = getFirstFrame(sb)
-  const last = getLastFrame(sb)
   const manualRefs = getRefs(sb)
-  if (manualRefs.length) {
-    manualRefs.forEach(pushRef)
-  } else {
-    pushRef(first)
-    pushRef(last)
-  }
+  // All supported local H3 and remote multi-reference paths use the
+  // storyboard's ordered reference list. Never synthesize a first/last-frame
+  // fallback here: those fields belong to the retired frame workflow and can
+  // both crash when stale data is present and reintroduce the wrong model
+  // contract into asset upload/reference preparation.
+  manualRefs.forEach(pushRef)
   return refs
 }
 
@@ -4609,24 +5110,34 @@ function buildVideoRequestParams(sb, prompt, promptIsFinal = false) {
     storyboard_id: sb.id,
     drama_id: dramaId,
     config_id: effectiveVideoConfigId.value || undefined,
-    model: effectiveVideoModel.value || undefined,
+    model: isLocalComfyUiVideo.value ? selectedLocalUnetModel.value : effectiveVideoModel.value || undefined,
     prompt,
     prompt_is_final: promptIsFinal,
     duration: Number(sb.duration || 5),
     aspect_ratio: selectedVideoAspectRatio.value,
   }
-  const first = getFirstFrame(sb)
-  const last = getLastFrame(sb)
   const refs = getRefs(sb)
-  if (usesGrokPublicVideoReferences.value) {
+  if (isLocalComfyUiVideo.value) {
+    Object.assign(params, {
+      reference_mode: 'multiple',
+      reference_image_urls: refs,
+      continuity_mode: selectedLocalContinuityMode.value,
+      megapixels: selectedLocalMegapixels.value,
+      steps: selectedLocalSteps.value,
+      lora_strength: selectedLocalLoraStrength.value,
+    })
+  } else if (isAutoDlComfyUiVideo.value) {
+    Object.assign(params, {
+      reference_mode: 'multiple',
+      reference_image_urls: refs.slice(0, 9),
+    })
+  } else if (usesGrokPublicVideoReferences.value) {
     Object.assign(params, {
       reference_mode: 'multiple',
       ...(refs.length ? { reference_image_urls: refs.slice(0, 7) } : {}),
     })
   }
   else if (refs.length) { Object.assign(params, { reference_mode: 'multiple', reference_image_urls: refs }) }
-  else if (first && last) { Object.assign(params, { reference_mode: 'first_last', first_frame_url: first, last_frame_url: last }) }
-  else if (first) { Object.assign(params, { reference_mode: 'single', image_url: first }) }
   return params
 }
 
@@ -4922,236 +5433,7 @@ async function syncVolcReferences(refs, force = false) {
   }
 }
 
-function getShotReferenceImages(sb) {
-  const refs = []
-  const pushRef = (value) => {
-    if (!value || refs.includes(value) || refs.length >= 6) return
-    refs.push(value)
-  }
-  const sceneId = sb?.scene_id || sb?.sceneId
-  const scene = scenes.value.find(item => item.id === sceneId)
-  pushRef(scene?.image_url || scene?.imageUrl)
-  for (const charId of getStoryboardCharacterIds(sb)) {
-    const char = chars.value.find(item => item.id === charId)
-    pushRef(char?.image_url || char?.imageUrl)
-  }
-  for (const referenceImage of getRefs(sb)) {
-    pushRef(referenceImage)
-  }
-  return refs.filter(Boolean).slice(0, 6)
-}
-
-function buildShotImagePrompt(sb, frameType) {
-  const title = sb.title || ''
-  const description = sb.image_prompt || sb.imagePrompt || sb.description || ''
-  const shotType = sb.shot_type || sb.shotType || ''
-  const angle = sb.angle || ''
-  const movement = sb.movement || ''
-  const location = sb.location || getSceneName(sb)
-  const time = sb.time || ''
-  const charactersText = getStoryboardCharacterNames(sb).join('、')
-  const action = sb.action || ''
-  const atmosphere = sb.atmosphere || ''
-  const frameHint = frameType === 'first_frame'
-    ? '生成这个镜头的起始关键帧，突出建立关系和动作开始瞬间'
-    : '生成这个镜头的结束关键帧，突出动作结束、情绪落点或结果状态'
-
-  return [
-    title ? `镜头标题：${title}` : '',
-    description ? `画面描述：${description}` : '',
-    shotType ? `景别：${shotType}` : '',
-    angle ? `机位：${angle}` : '',
-    movement ? `运镜：${movement}` : '',
-    charactersText ? `角色：${charactersText}` : '',
-    location ? `地点：${location}` : '',
-    time ? `时间：${time}` : '',
-    action ? `动作：${action}` : '',
-    atmosphere ? `氛围：${atmosphere}` : '',
-    frameHint,
-  ].filter(Boolean).join('；')
-}
-
-function setShotFramePending(sb, frameType) {
-  const key = framePendingKey(sb.id, frameType)
-  if (!pendingShotFrameKeys.value.includes(key)) pendingShotFrameKeys.value.push(key)
-  return key
-}
-
-function clearShotFramePending(key) {
-  pendingShotFrameKeys.value = pendingShotFrameKeys.value.filter(item => item !== key)
-}
-
-function shotFrameGeneration(sb, frameType) {
-  return imageGenerations.value
-    .filter(generation => Number(generation?.storyboard_id || generation?.storyboardId || 0) === Number(sb?.id || 0))
-    .filter(generation => String(generation?.frame_type || generation?.frameType || '') === frameType)
-    .sort((a, b) => Number(b?.id || 0) - Number(a?.id || 0))[0] || null
-}
-
-function shotFrameError(sb, frameType) {
-  const key = framePendingKey(sb?.id, frameType)
-  const runtimeError = String(shotFrameRuntimeErrors.value[key] || '').trim()
-  if (runtimeError) return runtimeError
-  const generation = shotFrameGeneration(sb, frameType)
-  if (String(generation?.status || '').toLowerCase() !== 'failed') return ''
-  return generation?.error_msg || generation?.errorMsg || `${frameType === 'first_frame' ? '首帧' : '尾帧'}生成失败`
-}
-
-function shotFrameLabel(sb, frameType) {
-  if (isPendingShotFrame(sb.id, frameType)) return frameType === 'first_frame' ? '首帧生成中' : '尾帧生成中'
-  if (shotFrameError(sb, frameType)) return frameType === 'first_frame' ? '首帧生成失败' : '尾帧生成失败'
-  return frameType === 'first_frame' ? '首帧' : '尾帧'
-}
-
-function clearShotFrameRuntimeError(key) {
-  if (!shotFrameRuntimeErrors.value[key]) return
-  const next = { ...shotFrameRuntimeErrors.value }
-  delete next[key]
-  shotFrameRuntimeErrors.value = next
-}
-
-function setShotFrameRuntimeError(key, message) {
-  shotFrameRuntimeErrors.value = {
-    ...shotFrameRuntimeErrors.value,
-    [key]: String(message || '镜头帧图生成失败'),
-  }
-}
-
-async function requestShotFrame(sb, frameType) {
-  const prompt = buildShotImagePrompt(sb, frameType)
-  const referenceImages = getShotReferenceImages(sb)
-  const body = {
-    storyboard_id: sb.id,
-    drama_id: dramaId,
-    config_id: effectiveImageConfigId.value || undefined,
-    model: effectiveImageModel.value || undefined,
-    size: isEggfansGptImage2C.value ? selectedGptImage2CSize.value : undefined,
-    prompt,
-    frame_type: frameType,
-    reference_images: referenceImages.length ? referenceImages : undefined,
-  }
-  return imageAPI.generate(body)
-}
-
-async function retryShotFrame(sb, frameType) {
-  const key = setShotFramePending(sb, frameType)
-  const failed = shotFrameGeneration(sb, frameType)
-  if (!failed?.id || String(failed.status || '').toLowerCase() !== 'failed') {
-    clearShotFramePending(key)
-    return genShotFrame(sb, frameType)
-  }
-  clearShotFrameRuntimeError(key)
-  const previousFramePath = frameType === 'first_frame' ? getFirstFrame(sb) : getLastFrame(sb)
-  try {
-    const generation = await imageAPI.retry(failed.id, { ...imageGenerationOptions.value, episode_id: epId.value })
-    toast.success(frameType === 'first_frame' ? '首帧已重新提交' : '尾帧已重新提交')
-    await refresh()
-    pollShotFrameGeneration(generation?.id, sb.id, frameType, key, previousFramePath)
-  } catch (error) {
-    clearShotFramePending(key)
-    setShotFrameRuntimeError(key, error?.message || '重新提交镜头帧图失败')
-    toast.error(error?.message || '重新提交镜头帧图失败')
-  }
-}
-
-async function pollShotFrameGeneration(generationId, storyboardId, frameType, key, previousFramePath = '') {
-  for (let i = 0; i < 120; i++) {
-    await sleep(4000)
-    try {
-      const generation = generationId ? await imageAPI.get(generationId) : null
-      await refresh()
-      const target = sbs.value.find(s => s.id === storyboardId)
-      const currentFramePath = frameType === 'first_frame' ? getFirstFrame(target) : getLastFrame(target)
-      const completedFramePath = generation?.local_path || generation?.localPath
-      if (generation?.status === 'completed' && completedFramePath) {
-        clearShotFramePending(key)
-        clearShotFrameRuntimeError(key)
-        return
-      }
-      if (currentFramePath && currentFramePath !== previousFramePath) {
-        clearShotFramePending(key)
-        clearShotFrameRuntimeError(key)
-        return
-      }
-      if (generation?.status === 'failed') {
-        clearShotFramePending(key)
-        const message = generation.error_msg || generation.errorMsg || (frameType === 'first_frame' ? '首帧生成失败' : '尾帧生成失败')
-        setShotFrameRuntimeError(key, message)
-        toast.error(message)
-        return
-      }
-    } catch (error) {
-      setShotFrameRuntimeError(key, error?.message || '读取镜头帧图任务状态失败')
-    }
-  }
-  clearShotFramePending(key)
-  const message = frameType === 'first_frame' ? '首帧生成超时：轮询超过 8 分钟仍未返回结果' : '尾帧生成超时：轮询超过 8 分钟仍未返回结果'
-  setShotFrameRuntimeError(key, message)
-  toast.error(message)
-}
-
-async function genShotFrame(sb, frameType) {
-  const key = setShotFramePending(sb, frameType)
-  clearShotFrameRuntimeError(key)
-  const previousFramePath = frameType === 'first_frame' ? getFirstFrame(sb) : getLastFrame(sb)
-  try {
-    const generation = await requestShotFrame(sb, frameType)
-    toast.success(frameType === 'first_frame' ? '首帧生成中' : '尾帧生成中')
-    await refresh()
-    pollShotFrameGeneration(generation?.id, sb.id, frameType, key, previousFramePath)
-  } catch (e) {
-    clearShotFramePending(key)
-    setShotFrameRuntimeError(key, e?.message || (frameType === 'first_frame' ? '提交首帧生成失败' : '提交尾帧生成失败'))
-    toast.error(e.message)
-  }
-}
-
-function getBatchShotFrameTasks(mode) {
-  const tasks = []
-  for (const sb of sbs.value) {
-    if ((mode === 'first_frame' || mode === 'first_last') && !getFirstFrame(sb) && !isPendingShotFrame(sb.id, 'first_frame')) {
-      tasks.push({ sb, frameType: 'first_frame' })
-    }
-    if ((mode === 'last_frame' || mode === 'first_last') && !getLastFrame(sb) && !isPendingShotFrame(sb.id, 'last_frame')) {
-      tasks.push({ sb, frameType: 'last_frame' })
-    }
-  }
-  return tasks
-}
-
-async function batchShotFrames(mode) {
-  const tasks = getBatchShotFrameTasks(mode)
-  if (!tasks.length) {
-    const message = mode === 'first_frame'
-      ? '所有首帧已生成或正在生成'
-      : mode === 'last_frame'
-        ? '所有尾帧已生成或正在生成'
-        : '所有首尾帧已生成或正在生成'
-    toast.info(message)
-    return
-  }
-
-  const pending = []
-  let failedCount = 0
-  for (const task of tasks) {
-    const key = setShotFramePending(task.sb, task.frameType)
-    pending.push({ ...task, key })
-    try {
-      const previousFramePath = task.frameType === 'first_frame' ? getFirstFrame(task.sb) : getLastFrame(task.sb)
-      const generation = await requestShotFrame(task.sb, task.frameType)
-      pollShotFrameGeneration(generation?.id, task.sb.id, task.frameType, key, previousFramePath)
-    } catch (e) {
-      failedCount += 1
-      clearShotFramePending(key)
-      toast.error(e.message)
-    }
-  }
-
-  const requestedCount = pending.length - failedCount
-  if (requestedCount) toast.success(`已提交 ${requestedCount} 张镜头帧图生成`)
-  if (failedCount) toast.error(`${failedCount} 张镜头帧图提交失败`)
-  await refresh()
-}
+// Legacy first/last-frame image generation removed; local MiniMax H3 only uses multi-reference R2V.
 
 async function genVid(sb, usePromptDraft = false) {
   const draftPrompt = hasCurrentVideoPromptDraft(sb) ? String(videoPromptDrafts.value[String(sb.id)] || '').trim() : ''
@@ -5369,6 +5651,7 @@ async function loadConfigs() {
     videoConfigs.value = vidCfgs || []
     audioConfigs.value = audCfgs || []
     if (!modelPreferencesHydrated) await restoreModelPreferences()
+    if (epId.value) await restoreEpisodeGenerationPreferences()
   } catch (e) { console.error('Failed to load AI configs', e) }
 }
 
@@ -5412,7 +5695,13 @@ async function loadVoices() {
 }
 
 watch([effectiveAudioConfigId, audioConfigs], () => { loadVoices() }, { deep: true })
-onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRuntime() })
+onMounted(async () => {
+  await loadConfigs()
+  await refresh()
+  await restoreEpisodeGenerationPreferences()
+  await loadVoices()
+  await loadStoryboardAgentRuntime()
+})
 </script>
 
 <style scoped>
@@ -5907,7 +6196,8 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
 .bubble-dot.current { background: var(--accent-dark); transform: scale(1.2); box-shadow: 0 0 0 2px rgba(76, 125, 255, 0.14); }
 
 /* Extract grid */
-.extract-stage { flex: 1; min-height: 0; overflow: hidden; padding: 12px 16px; display: grid; grid-template-columns: 280px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; }
+.extract-stage { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; display: grid; grid-template-columns: 280px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: stretch; }
+.extract-props { grid-column: 2 / -1; }
 .extract-summary { padding: 16px; display: flex; flex-direction: column; gap: 14px; align-self: stretch; position: sticky; top: 0; max-height: 100%; }
 .extract-summary-kicker { font-size: 10px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); }
 .extract-summary-title { font-size: 20px; line-height: 1.05; font-family: var(--font-display); color: var(--text-0); }
@@ -6259,7 +6549,7 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
 }
 
 /* Production tabs */
-.prod-tabs { display: flex; gap: 0; background: var(--bg-2); border-radius: var(--radius); padding: 2px; }
+.prod-tabs { display: flex; flex-wrap: wrap; gap: 0; background: var(--bg-2); border-radius: var(--radius); padding: 2px; }
 .prod-tab {
   display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 12px;
   border: none; background: transparent; color: var(--text-2); cursor: pointer;
@@ -6357,6 +6647,10 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
 .asset-body { padding: 8px 10px; }
 .asset-name { font-size: 13px; font-weight: 600; }
 .asset-meta { font-size: 11px; }
+.prop-asset-card .asset-body { flex: 1; }
+.prop-asset-card .asset-cover img { object-fit: contain; }
+.prop-asset-description { margin-top: 6px; color: var(--text-2); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.prop-asset-card .asset-generation-error { flex-basis: 100%; }
 .asset-volc-line {
   margin-top: 7px;
   display: grid;
@@ -6542,7 +6836,7 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
 .prod-card:hover { transform: translateY(-2px); box-shadow: 0 16px 30px rgba(20, 32, 54, 0.08); }
 .prod-cover { position: relative; aspect-ratio: 16/9; background: var(--bg-2); overflow: hidden; }
 .prod-cover img { width: 100%; height: 100%; object-fit: cover; }
-.prod-video { width: 100%; height: 100%; object-fit: cover; background: #000; display: block; }
+.prod-video { width: 100%; height: 100%; object-fit: contain; background: #000; display: block; }
 .video-preview-btn {
   position: absolute;
   right: 8px;
@@ -6616,6 +6910,13 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
   position: absolute; top: 5px; left: 5px; font-size: 10px; font-weight: 700;
   font-family: var(--font-mono); background: rgba(0,0,0,0.5); color: #fff; padding: 1px 5px; border-radius: 3px;
 }
+.prod-reference-video-badge {
+  position: absolute; top: 5px; right: 5px; z-index: 1;
+  padding: 3px 6px; border-radius: 999px;
+  background: rgba(26, 135, 84, 0.92); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 1.2;
+  box-shadow: 0 2px 8px rgba(10, 50, 30, 0.22);
+}
 .prod-overlay-badge {
   position: absolute; bottom: 5px; right: 5px; font-size: 10px; font-weight: 600;
   background: var(--success); color: #fff; padding: 1px 5px; border-radius: 3px;
@@ -6623,6 +6924,29 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
 .prod-info { padding: 10px 12px 8px; min-width: 0; }
 .prod-desc { font-size: 12px; line-height: 1.4; }
 .prod-meta-line { margin-top: 5px; font-size: 10px; color: var(--text-3); }
+.prod-asset-stats {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: 10px;
+  flex-wrap: wrap;
+}
+.prod-asset-stats span:not(.dim) { white-space: nowrap; }
+.prod-generation-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+.generation-status { color: var(--text-3); }
+.generation-status.is-pending { color: var(--accent-text); }
+.generation-status.is-ready { color: var(--success); }
+.generation-reference-state { color: var(--success); font-weight: 700; }
 .prod-dots { display: flex; align-items: center; gap: 4px; margin-top: 5px; color: var(--text-3); flex-wrap: wrap; min-width: 0; }
 .prod-error {
   margin-top: 6px;
@@ -7368,6 +7692,10 @@ onMounted(() => { refresh(); loadConfigs(); loadVoices(); loadStoryboardAgentRun
 
   .extract-stage {
     grid-template-columns: 1fr;
+  }
+
+  .extract-props {
+    grid-column: auto;
   }
 
   .extract-summary {

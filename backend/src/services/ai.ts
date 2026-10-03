@@ -25,6 +25,15 @@ export interface AIConfig {
 
 export const DEFAULT_TEXT_STREAM_IDLE_TIMEOUT_MS = 60_000
 
+/**
+ * Migrate the former Eggfans API hostname to the current gateway hostname.
+ * Only the exact legacy API host is rewritten; custom hosts and paths remain
+ * unchanged so user-supplied provider endpoints are preserved.
+ */
+export function normalizeEggfansBaseUrl(baseUrl: string) {
+  return String(baseUrl || '').trim().replace(/^https:\/\/api\.eggfans\.com(?=\/|$)/i, 'https://api.eggfans.org')
+}
+
 /** Timeout for an idle text SSE stream, not for the complete generation. */
 export function getTextProviderStreamIdleTimeoutMs(config?: Pick<AIConfig, 'settings'> | null) {
   const settings = config?.settings || {}
@@ -49,7 +58,12 @@ export function getTextProviderBaseUrl(config: AIConfig) {
   }
 
   if (provider === 'openai' || provider === 'openrouter' || provider === 'chatfire' || provider === 'eggfans') {
-    return joinProviderUrl(config.baseUrl, '/v1', '')
+    const baseUrl = provider === 'eggfans' ? normalizeEggfansBaseUrl(config.baseUrl) : config.baseUrl
+    return joinProviderUrl(baseUrl, '/v1', '')
+  }
+
+  if (provider === 'autodl_comfyui') {
+    return config.baseUrl
   }
 
   if (provider === 'volcengine') {
@@ -104,7 +118,9 @@ export function getActiveConfig(serviceType: ServiceType): AIConfig | null {
     id: active.id,
     serviceType: active.serviceType as ServiceType,
     provider: active.provider || '',
-    baseUrl: active.baseUrl,
+    baseUrl: active.provider?.toLowerCase() === 'eggfans'
+      ? normalizeEggfansBaseUrl(active.baseUrl)
+      : active.baseUrl,
     apiKey: resolveConfigApiKey(active),
     model: models[0] || '',
     endpoint: active.endpoint || null,
@@ -152,7 +168,9 @@ export function getConfigById(id: number): AIConfig | null {
     id: row.id,
     serviceType: row.serviceType as ServiceType,
     provider: row.provider || '',
-    baseUrl: row.baseUrl,
+    baseUrl: row.provider?.toLowerCase() === 'eggfans'
+      ? normalizeEggfansBaseUrl(row.baseUrl)
+      : row.baseUrl,
     apiKey: resolveConfigApiKey(row),
     model: models[0] || '',
     endpoint: row.endpoint || null,

@@ -62,6 +62,7 @@ export const episodeAPI = {
   update: (id: number, data: any) => api.put(`/episodes/${id}`, data),
   characters: (id: number) => api.get(`/episodes/${id}/characters`),
   scenes: (id: number) => api.get(`/episodes/${id}/scenes`),
+  props: (id: number) => api.get(`/episodes/${id}/props`),
   storyboards: (id: number) => api.get(`/episodes/${id}/storyboards`),
   pipelineStatus: (id: number) => api.get(`/episodes/${id}/pipeline-status`),
 }
@@ -77,7 +78,17 @@ export const storyboardAPI = {
 }
 
 export const characterAPI = {
+  createWithImage: (data: { dramaId: number; episodeId: number; name: string; role?: string }, file: File) => {
+    const body = new FormData()
+    body.append('drama_id', String(data.dramaId))
+    body.append('episode_id', String(data.episodeId))
+    body.append('name', data.name)
+    if (data.role) body.append('role', data.role)
+    body.append('file', file)
+    return api.upload('/characters/upload-image', body)
+  },
   update: (id: number, data: any) => api.put(`/characters/${id}`, data),
+  del: (id: number) => api.del(`/characters/${id}`),
   uploadImage: (id: number, file: File) => {
     const body = new FormData()
     body.append('file', file)
@@ -104,6 +115,21 @@ export const characterAPI = {
 }
 
 export const sceneAPI = {
+  createWithImage: (data: { dramaId: number; episodeId: number; location: string; time?: string }, file: File) => {
+    const body = new FormData()
+    body.append('drama_id', String(data.dramaId))
+    body.append('episode_id', String(data.episodeId))
+    body.append('location', data.location)
+    if (data.time) body.append('time', data.time)
+    body.append('file', file)
+    return api.upload('/scenes/upload-image', body)
+  },
+  uploadImage: (id: number, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return api.upload(`/scenes/${id}/upload-image`, body)
+  },
+  del: (id: number) => api.del(`/scenes/${id}`),
   generateImage: (id: number, episodeId: number, options?: { config_id?: number | null; model?: string | null; size?: string | null }) => api.post(`/scenes/${id}/generate-image`, {
     episode_id: episodeId,
     config_id: options?.config_id || undefined,
@@ -224,6 +250,29 @@ export const mijingModelAPI = {
     if (refresh) query.set('refresh', '1')
     return api.get(`/mijing/models${query.size ? `?${query.toString()}` : ''}`)
   },
+}
+export const propAPI = {
+  createWithImage: (data: { dramaId: number; episodeId: number; name: string; type?: string }, file: File) => {
+    const body = new FormData()
+    body.append('drama_id', String(data.dramaId))
+    body.append('episode_id', String(data.episodeId))
+    body.append('name', data.name)
+    if (data.type) body.append('type', data.type)
+    body.append('file', file)
+    return api.upload('/props/upload-image', body)
+  },
+  uploadImage: (id: number, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return api.upload(`/props/${id}/upload-image`, body)
+  },
+  del: (id: number) => api.del(`/props/${id}`),
+  generateImage: (id: number, episodeId: number, options?: { config_id?: number | null; model?: string | null; size?: string | null }) => api.post(`/props/${id}/generate-image`, {
+    episode_id: episodeId,
+    config_id: options?.config_id || undefined,
+    model: options?.model || undefined,
+    size: options?.size || undefined,
+  }),
 }
 
 export const agentConfigAPI = {

@@ -2,20 +2,6 @@
 setlocal
 cd /d "%~dp0"
 
-where node >nul 2>nul
-if errorlevel 1 (
-  echo [ERROR] Node.js 20 or newer is required.
-  pause
-  exit /b 1
-)
-
-where npm >nul 2>nul
-if errorlevel 1 (
-  echo [ERROR] npm is required. Please install Node.js 20 or newer.
-  pause
-  exit /b 1
-)
-
 if not exist "backend\node_modules" (
   echo [ERROR] Dependencies are missing. Run: npm run setup
   pause
@@ -32,7 +18,13 @@ if not exist "desktop\node_modules" (
   exit /b 1
 )
 
-echo Starting Mijing Studio development build...
+rem Keep the source Electron instance independent from a packaged instance,
+rem while explicitly sharing the production project database and media.
+set "MIJING_DEV_MODE=1"
+rem APPDATA can be redirected by a shell or the Codex host; USERPROFILE is
+rem stable for the Windows account that owns the packaged app's data.
+set "MIJING_DATA_DIR=%USERPROFILE%\AppData\Roaming\onekeygo-studio-desktop"
+echo Starting the latest source build with the existing project database...
 call npm run desktop:dev
 if errorlevel 1 (
   echo.
@@ -40,5 +32,4 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-
 endlocal

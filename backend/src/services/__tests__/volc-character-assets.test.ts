@@ -6,6 +6,8 @@ import {
   buildVolcAssetCreatePayload,
   isRetryableVolcAssetCreateError,
   syncVolcCharacterAssetForCharacter,
+  syncVolcPropAssetForProp,
+  syncVolcSceneAssetForScene,
 } from '../volc-asset-sync.js'
 
 test('buildVolcAssetCreatePayload keeps role assets on the Volc asset create API shape', () => {
@@ -130,3 +132,99 @@ test('syncVolcCharacterAssetForCharacter records upload failure without deleting
     db.delete(schema.characters).where(eq(schema.characters.id, characterId)).run()
   }
 })
+
+test('syncVolcSceneAssetForScene automatically uploads the generated scene with episode context', async () => {
+  const ts = new Date().toISOString()
+  const created = db.insert(schema.scenes).values({
+    dramaId: 987656,
+    episodeId: 765432,
+    location: `scene-${Date.now()}`,
+    time: 'day',
+    prompt: 'scene prompt',
+    imageUrl: 'static/images/generated-scene.png',
+    localPath: 'static/images/generated-scene.png',
+    status: 'completed',
+    createdAt: ts,
+    updatedAt: ts,
+  }).run()
+  const sceneId = Number(created.lastInsertRowid)
+  const calls: any[] = []
+
+  try {
+    await syncVolcSceneAssetForScene(sceneId, {
+      syncAsset: async (input) => {
+        calls.push(input)
+        return fakeSyncedAsset('asset-scene')
+      },
+    })
+    assert.deepEqual(calls.map(call => ({
+      url: call.url,
+      category: call.category,
+      dramaId: call.dramaId,
+      episodeId: call.episodeId,
+      source: call.source,
+    })), [{
+      url: 'static/images/generated-scene.png',
+      category: 'scene',
+      dramaId: 987656,
+      episodeId: 765432,
+      source: 'volc:autoSceneImage',
+    }])
+  } finally {
+    db.delete(schema.scenes).where(eq(schema.scenes.id, sceneId)).run()
+  }
+})
+
+test('syncVolcPropAssetForProp automatically uploads the generated prop with linked episode context', async () => {
+  const ts = new Date().toISOString()
+  const created = db.insert(schema.props).values({
+    dramaId: 987657,
+    name: `prop-${Date.now()}`,
+    imageUrl: 'static/images/generated-prop.png',
+    localPath: 'static/images/generated-prop.png',
+    createdAt: ts,
+    updatedAt: ts,
+  }).run()
+  const propId = Number(created.lastInsertRowid)
+  const link = db.insert(schema.episodeProps).values({ episodeId: 765433, propId, createdAt: ts }).run()
+  const linkId = Number(link.lastInsertRowid)
+  const calls: any[] = []
+
+  try {
+    await syncVolcPropAssetForProp(propId, {
+      syncAsset: async (input) => {
+        calls.push(input)
+        return fakeSyncedAsset('asset-prop')
+      },
+    })
+    assert.deepEqual(calls.map(call => ({
+      url: call.url,
+      category: call.category,
+      dramaId: call.dramaId,
+      episodeId: call.episodeId,
+      source: call.source,
+    })), [{
+      url: 'static/images/generated-prop.png',
+      category: 'prop',
+      dramaId: 987657,
+      episodeId: 765433,
+      source: 'volc:autoPropImage',
+    }])
+  } finally {
+    db.delete(schema.episodeProps).where(eq(schema.episodeProps.id, linkId)).run()
+    db.delete(schema.props).where(eq(schema.props.id, propId)).run()
+  }
+})
+
+function fakeSyncedAsset(providerAssetId: string) {
+  return {
+    localAssetId: 1,
+    providerAssetId,
+    assetUri: `Asset://${providerAssetId}`,
+    providerGroupId: 'provider-group',
+    localGroupId: 'local-group',
+    groupName: 'test-group',
+    providerUrl: 'https://provider.example.com/preview.png',
+    publicUrl: 'https://cdn.example.com/image.png',
+  }
+}

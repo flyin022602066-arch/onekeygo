@@ -48,3 +48,32 @@ test('TK overseas character prompt locks international casting and rejects East 
   assert.match(prompt, /非东亚面孔/)
   assert.match(prompt, /不要输出东亚默认脸/)
 })
+
+test('character asset prompts strip narrative violence and temporary costume states', () => {
+  const prompt = buildCharacterDesignPrompt({
+    name: '凤溪',
+    role: '主角',
+    description: '被判处废除金丹并逐出宗门的弟子，在祭台上临刑时以狗血自救并逃离混元宗',
+    appearance: '衣物被狗血浸湿，外衣撕扯后露出沾血衬衣',
+    personality: '机敏果敢、求生欲强、嘴硬幽默、敢于反抗',
+    style: '3D动画',
+  })
+
+  assert.match(prompt, /角色「凤溪」/)
+  assert.match(prompt, /角色定位：主角/)
+  assert.match(prompt, /性格气质：机敏果敢、求生欲强、嘴硬幽默/)
+  assert.match(prompt, /静态资产约束/)
+  assert.doesNotMatch(prompt, /狗血|撕扯|沾血|废除|追捕|死亡|攻击|暴力/)
+})
+
+test('safe appearance details remain available after narrative filtering', () => {
+  const prompt = buildCharacterDesignPrompt({
+    name: '林夏',
+    role: '女主',
+    appearance: '28岁女性，长发，米色风衣，黑色长裤，追捕中',
+    personality: '冷静、坚定',
+  })
+
+  assert.match(prompt, /28岁女性、长发、米色风衣、黑色长裤/)
+  assert.doesNotMatch(prompt, /追捕中/)
+})

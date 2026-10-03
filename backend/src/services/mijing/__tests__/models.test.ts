@@ -34,6 +34,14 @@ test('normalizeMijingCatalog maps model types and endpoints', () => {
   })
   assert.deepEqual(gptImageModels[0].transmissionParameters.defaults, { size: '1K', quality: 'high' })
 
+  const gptImageAllModels = normalizeMijingCatalog({
+    data: [{ name: 'gpt-image-2-all', display_name: 'gpt-image-2-all', type: 'image' }],
+  })
+  assert.deepEqual(gptImageAllModels[0].transmissionParameters.defaults, {
+    size: '3840x2160',
+    quality: 'high',
+  })
+
   assert.equal(models[2].serviceType, 'video')
   assert.equal(models[2].endpointPath, '/v1/video/generations')
   assert.equal(models[2].queryEndpointPath, '/v1/video/generations/{task_id}')

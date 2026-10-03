@@ -13,6 +13,8 @@ const OFFICIAL_SEEDANCE_NAME = 'Seedance 2.0 官方视频'
 const OFFICIAL_SEEDANCE_ENDPOINT = '/api/v3/contents/generations/tasks'
 const OFFICIAL_SEEDANCE_QUERY_ENDPOINT = '/api/v3/contents/generations/tasks/{task_id}'
 const OFFICIAL_SEEDANCE_PRIORITY = 108
+const COMFYUI_DEFAULT_LORA = 'minimaxh3\\minimax_h3_turbo_v4_step600_ema.safetensors'
+const COMFYUI_LEGACY_LORA = 'minimaxh3\\minimax_h3_turbo_v4_step600_ema.safetensors'
 
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true })
 
@@ -35,7 +37,7 @@ sqlite.exec(`
     metadata TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    deleted_at TEXT
+     deleted_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS episodes (
@@ -55,6 +57,7 @@ sqlite.exec(`
     audio_config_id INTEGER,
     dubbing_enabled INTEGER DEFAULT 0,
     breakdown_mode TEXT DEFAULT 'standard',
+    breakdown_language TEXT DEFAULT 'zh',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     deleted_at TEXT
@@ -64,6 +67,7 @@ sqlite.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     drama_id INTEGER NOT NULL,
     name TEXT NOT NULL,
+    aliases TEXT,
     role TEXT,
     description TEXT,
     appearance TEXT,
@@ -92,6 +96,7 @@ sqlite.exec(`
     drama_id INTEGER NOT NULL,
     episode_id INTEGER,
     location TEXT NOT NULL,
+    aliases TEXT,
     time TEXT NOT NULL,
     prompt TEXT NOT NULL,
     storyboard_count INTEGER DEFAULT 1,
@@ -132,6 +137,7 @@ sqlite.exec(`
     tts_audio_url TEXT,
     subtitle_url TEXT,
     composed_video_url TEXT,
+    composed_video_generation_id INTEGER,
     status TEXT DEFAULT 'pending',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -159,6 +165,17 @@ sqlite.exec(`
     ON episode_scenes (episode_id);
   CREATE INDEX IF NOT EXISTS idx_episode_scenes_scene_id
     ON episode_scenes (scene_id);
+
+  CREATE TABLE IF NOT EXISTS episode_props (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id INTEGER NOT NULL,
+    prop_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_episode_props_episode_id
+    ON episode_props (episode_id);
+  CREATE INDEX IF NOT EXISTS idx_episode_props_prop_id
+    ON episode_props (prop_id);
 
   CREATE TABLE IF NOT EXISTS storyboard_characters (
     storyboard_id INTEGER NOT NULL,
@@ -286,6 +303,9 @@ sqlite.exec(`
     fps INTEGER,
     resolution TEXT,
     aspect_ratio TEXT,
+    megapixels REAL,
+    steps INTEGER,
+    lora_strength REAL,
     style TEXT,
     motion_level INTEGER,
     camera_motion TEXT,
@@ -300,8 +320,14 @@ sqlite.exec(`
     height INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    completed_at TEXT,
-    deleted_at TEXT
+     completed_at TEXT,
+     deleted_at TEXT,
+     sequence_run_id INTEGER,
+     sequence_step_index INTEGER,
+     continuity_mode TEXT,
+     latent_path TEXT,
+     latent_clip_index INTEGER,
+     reference_video_local_path TEXT
   );
 
   CREATE TABLE IF NOT EXISTS video_sequence_runs (
@@ -312,6 +338,10 @@ sqlite.exec(`
     model TEXT,
     config_id INTEGER,
     aspect_ratio TEXT,
+    megapixels REAL,
+     sampling_steps INTEGER,
+     lora_strength REAL,
+     continuity_mode TEXT NOT NULL DEFAULT 'standard_r2v',
     status TEXT NOT NULL DEFAULT 'queued',
     current_index INTEGER NOT NULL DEFAULT 0,
     total_count INTEGER NOT NULL DEFAULT 0,
@@ -319,7 +349,7 @@ sqlite.exec(`
     error_msg TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    completed_at TEXT
+     completed_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS video_sequence_steps (
@@ -336,16 +366,22 @@ sqlite.exec(`
     first_frame_asset_uri TEXT,
     tail_frame_local_path TEXT,
     tail_frame_url TEXT,
-    tail_frame_asset_id TEXT,
-    tail_frame_asset_uri TEXT,
-    asset_ids TEXT,
+     tail_frame_asset_id TEXT,
+     tail_frame_asset_uri TEXT,
+     continuity_reference_local_path TEXT,
+     continuity_reference_url TEXT,
+     continuity_reference_asset_id TEXT,
+     continuity_reference_asset_uri TEXT,
+     asset_ids TEXT,
     asset_refs TEXT,
     reference_image_urls TEXT,
     prompt TEXT,
-    error_msg TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    completed_at TEXT
+     error_msg TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     completed_at TEXT,
+     latent_path TEXT,
+     latent_clip_index INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS video_merges (
@@ -370,6 +406,7 @@ sqlite.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     drama_id INTEGER NOT NULL,
     name TEXT NOT NULL,
+    aliases TEXT,
     type TEXT,
     description TEXT,
     prompt TEXT,
@@ -438,11 +475,32 @@ function ensureColumn(table: string, column: string, definition: string) {
 
 ensureColumn('episodes', 'image_config_id', 'INTEGER')
 ensureColumn('video_sequence_runs', 'aspect_ratio', 'TEXT')
+ensureColumn('video_sequence_runs', 'megapixels', 'REAL')
+ensureColumn('video_sequence_runs', 'sampling_steps', 'INTEGER')
+ensureColumn('video_sequence_runs', 'lora_strength', 'REAL')
+ensureColumn('video_sequence_runs', 'continuity_mode', "TEXT NOT NULL DEFAULT 'standard_r2v'")
+  ensureColumn('video_sequence_steps', 'latent_path', 'TEXT')
+  ensureColumn('video_sequence_steps', 'latent_clip_index', 'INTEGER')
+  ensureColumn('video_sequence_steps', 'continuity_reference_local_path', 'TEXT')
+  ensureColumn('video_sequence_steps', 'continuity_reference_url', 'TEXT')
+  ensureColumn('video_sequence_steps', 'continuity_reference_asset_id', 'TEXT')
+  ensureColumn('video_sequence_steps', 'continuity_reference_asset_uri', 'TEXT')
+ensureColumn('video_generations', 'sequence_run_id', 'INTEGER')
+ensureColumn('video_generations', 'sequence_step_index', 'INTEGER')
+ensureColumn('video_generations', 'continuity_mode', 'TEXT')
+ensureColumn('video_generations', 'latent_path', 'TEXT')
+ensureColumn('video_generations', 'latent_clip_index', 'INTEGER')
+ensureColumn('video_generations', 'reference_video_local_path', 'TEXT')
+ensureColumn('video_generations', 'lora_strength', 'REAL')
 ensureColumn('episodes', 'video_config_id', 'INTEGER')
 ensureColumn('episodes', 'audio_config_id', 'INTEGER')
 ensureColumn('episodes', 'dubbing_enabled', 'INTEGER DEFAULT 0')
 ensureColumn('episodes', 'breakdown_mode', "TEXT DEFAULT 'standard'")
+ensureColumn('episodes', 'breakdown_language', "TEXT DEFAULT 'zh'")
+ensureColumn('scenes', 'aliases', 'TEXT')
+ensureColumn('image_generations', 'prop_id', 'INTEGER')
 ensureColumn('characters', 'volc_character_asset_id', 'TEXT')
+ensureColumn('characters', 'aliases', 'TEXT')
 ensureColumn('characters', 'volc_character_uri', 'TEXT')
 ensureColumn('characters', 'volc_character_local_asset_id', 'INTEGER')
 ensureColumn('characters', 'volc_character_synced_at', 'TEXT')
@@ -450,6 +508,10 @@ ensureColumn('characters', 'volc_character_sync_status', 'TEXT')
 ensureColumn('characters', 'volc_character_sync_error', 'TEXT')
 ensureColumn('video_generations', 'final_prompt', 'TEXT')
 ensureColumn('video_generations', 'prompt_is_final', 'INTEGER DEFAULT 0')
+ensureColumn('video_generations', 'megapixels', 'REAL')
+ensureColumn('video_generations', 'steps', 'INTEGER')
+ensureColumn('video_generations', 'reference_audio_urls', 'TEXT')
+ensureColumn('storyboards', 'composed_video_generation_id', 'INTEGER')
 ensureColumn('assets', 'provider', 'TEXT')
 ensureColumn('assets', 'provider_asset_id', 'TEXT')
 ensureColumn('assets', 'asset_uri', 'TEXT')
@@ -465,6 +527,7 @@ ensureColumn('assets', 'provider_url', 'TEXT')
 ensureColumn('assets', 'expire_time', 'TEXT')
 ensureColumn('assets', 'expire_time_desc', 'TEXT')
 ensureColumn('assets', 'preview_cached_key', 'TEXT')
+ensureColumn('props', 'aliases', 'TEXT')
 
 sqlite.prepare(`
   UPDATE ai_service_configs
@@ -475,10 +538,45 @@ sqlite.prepare(`
 `).run(JSON.stringify([CURRENT_SEEDANCE_2_MODEL]), new Date().toISOString(), JSON.stringify([LEGACY_SEEDANCE_2_MODEL]))
 
 ensureOfficialSeedanceConfig()
+upgradeLegacyComfyUiSettings()
 
 export const db = drizzle(sqlite, { schema })
 export { schema }
 export type DB = typeof db
+
+function upgradeLegacyComfyUiSettings() {
+  const rows = sqlite.prepare(`
+    SELECT id, settings
+    FROM ai_service_configs
+    WHERE service_type = 'video'
+      AND provider = 'comfyui'
+  `).all() as Array<{ id: number; settings?: string | null }>
+  const update = sqlite.prepare(`
+    UPDATE ai_service_configs
+    SET settings = ?, updated_at = ?
+    WHERE id = ?
+  `)
+  for (const row of rows) {
+    let settings: Record<string, any>
+    try {
+      settings = row.settings ? JSON.parse(row.settings) : {}
+    } catch {
+      continue
+    }
+    const comfyui = settings.comfyui && typeof settings.comfyui === 'object'
+      ? { ...settings.comfyui }
+      : {}
+    const legacyDefaults = comfyui.lowVram === true
+      && (comfyui.clipDevice == null || comfyui.clipDevice === 'cpu')
+      && (!comfyui.lora || comfyui.lora === COMFYUI_LEGACY_LORA)
+    if (!legacyDefaults) continue
+    comfyui.lowVram = false
+    comfyui.clipDevice = 'default'
+    comfyui.lora = COMFYUI_DEFAULT_LORA
+    settings.comfyui = comfyui
+    update.run(JSON.stringify(settings), new Date().toISOString(), row.id)
+  }
+}
 
 function ensureOfficialSeedanceConfig() {
   const ts = new Date().toISOString()

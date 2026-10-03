@@ -3,15 +3,28 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { findAvailablePort, replaceAsarWithUnpacked } from './runtime-utils.mjs'
+import { applyBundledMediaEnvironment, findAvailablePort, replaceAsarWithUnpacked } from './runtime-utils.mjs'
+import { createComfyUiWorkerManager } from './comfyui-worker.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
-const DEFAULT_PORT = 5679
+// Keep this project's bundled backend away from the other desktop project.
+// An environment override is useful for parallel test instances.
+const DEFAULT_PORT = Number(process.env.MIJING_BACKEND_PORT) || 45679
 const HEALTH_TIMEOUT_MS = 90_000
+
+// Keep the source development build isolated from the packaged app. Electron
+// derives its single-instance lock from the userData directory, so sharing it
+// makes `start-dev.bat` exit immediately whenever the installed app is open.
+if (process.env.MIJING_DEV_MODE === '1') {
+  app.setPath('userData', path.join(app.getPath('appData'), 'onekeygo-studio-desktop-dev'))
+}
+
 let mainWindow = null
 let backendUrl = ''
 let logFile = ''
+let comfyUiManager = null
+let isQuitting = false
 
 function writeLog(level, message, error) {
   if (!logFile) return
@@ -75,9 +88,9 @@ function loadWindowState() {
     const width = Math.max(1100, Math.min(3840, Number(state.width) || fallback.width))
     const height = Math.max(720, Math.min(2160, Number(state.height) || fallback.height))
     const candidate = { width, height, x: Number(state.x), y: Number(state.y) }
-    return isVisibleOnDisplay(candidate) ? candidate : { width, height }
+    return isVisibleOnDisplay(candidate) ? candidate : { width, height, center: true }
   } catch {
-    return fallback
+    return { ...fallback, center: true }
   }
 }
 
@@ -119,7 +132,12 @@ function resolveBundledMediaPaths() {
 }
 
 function ensureUserDataLayout(runtimeRoot) {
-  const userRoot = app.getPath('userData')
+  // The source launcher may use an isolated Electron userData directory so it
+  // can run alongside an installed build.  Keep the project database and
+  // uploaded media shared with the installed build when an explicit data root
+  // is supplied by the launcher.
+  const configuredDataRoot = String(process.env.MIJING_DATA_DIR || '').trim()
+  const userRoot = configuredDataRoot ? path.resolve(configuredDataRoot) : app.getPath('userData')
   const configRoot = path.join(userRoot, 'configs')
   const dataRoot = path.join(userRoot, 'data')
   const configPath = path.join(configRoot, 'config.yaml')
@@ -134,7 +152,7 @@ function ensureUserDataLayout(runtimeRoot) {
 
 async function startBundledBackend(runtimeRoot) {
   const storage = ensureUserDataLayout(runtimeRoot)
-  const port = await findAvailablePort()
+  const port = await findAvailablePort(DEFAULT_PORT)
   const media = resolveBundledMediaPaths()
   process.env.NODE_ENV = 'production'
   process.env.CONFIG_PATH = storage.configPath
@@ -145,8 +163,10 @@ async function startBundledBackend(runtimeRoot) {
   process.env.HOST = '127.0.0.1'
   process.env.CORS_ORIGINS = `http://127.0.0.1:${port}`
   process.env.SKILLS_PATH = path.join(runtimeRoot, 'skills')
-  if (media.ffmpeg) process.env.FFMPEG_PATH = media.ffmpeg
-  if (media.ffprobe) process.env.FFPROBE_PATH = media.ffprobe
+  // Clear inherited paths from an older portable build when its unpacked
+  // binary no longer exists. The backend can then discover the current
+  // resources copy or fall back to ffmpeg/ffprobe on PATH.
+  applyBundledMediaEnvironment(process.env, media)
 
   const backendEntry = path.join(runtimeRoot, 'backend', 'dist', 'index.js')
   if (!fs.existsSync(backendEntry)) throw new Error(`Bundled backend entry is missing: ${backendEntry}`)
@@ -191,8 +211,11 @@ function createMainWindow(url) {
     ...state,
     minWidth: 1100,
     minHeight: 720,
-    show: false,
-    title: '谜镜',
+    // Show the native window immediately.  Waiting for ready-to-show can
+    // leave the packaged app running with no visible window when Chromium
+    // skips that event (for example after a GPU/display transition).
+    show: true,
+    title: 'eggfans',
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     autoHideMenuBar: true,
     backgroundColor: '#101114',
@@ -204,8 +227,35 @@ function createMainWindow(url) {
       webSecurity: true,
     },
   })
+  // A persisted monitor can disappear between launches.  Re-validate the
+  // actual bounds after BrowserWindow creation and center on the primary
+  // work area when necessary.
+  if (!isVisibleOnDisplay(mainWindow.getBounds())) {
+    mainWindow.center()
+  }
   mainWindow.on('close', saveWindowState)
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  let windowShown = false
+  const showMainWindow = () => {
+    if (windowShown || !mainWindow || mainWindow.isDestroyed()) return
+    windowShown = true
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    if (!isVisibleOnDisplay(mainWindow.getBounds())) mainWindow.center()
+    mainWindow.show()
+    mainWindow.focus()
+    writeLog('info', `Main window shown: ${JSON.stringify(mainWindow.getBounds())}`)
+  }
+  // `ready-to-show` can be skipped by Electron when the renderer loads a
+  // large static bundle or GPU compositing is delayed. Always show after the
+  // document has finished loading, with a timeout fallback for slow machines.
+  mainWindow.once('ready-to-show', showMainWindow)
+  mainWindow.webContents.once('did-finish-load', showMainWindow)
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    writeLog('error', `Renderer failed to load (${errorCode}): ${errorDescription} ${validatedURL}`)
+    showMainWindow()
+  })
+  mainWindow.on('show', () => writeLog('info', 'Main window show event fired'))
+  mainWindow.on('hide', () => writeLog('warn', 'Main window hide event fired'))
+  setTimeout(showMainWindow, 3000)
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     try {
       const target = new URL(targetUrl)
@@ -227,11 +277,31 @@ function createMainWindow(url) {
 async function start() {
   initializeLogging()
   createApplicationMenu()
+  const comfyLogPath = path.join(app.getPath('userData'), 'logs', 'comfyui-worker.log')
+  comfyUiManager = createComfyUiWorkerManager({
+    logPath: comfyLogPath,
+    onEvent(event, detail) {
+      if (event === 'ready') {
+        writeLog('info', `MiniMax H3 Worker ready (${detail.baseUrl}, started=${detail.started})`)
+      } else if (event === 'restarting') {
+        writeLog('warn', `MiniMax H3 Worker automatic repair is restarting the app-owned Worker: ${detail.reason || 'health check failed'}`)
+      } else {
+        writeLog('info', `MiniMax H3 Worker self-check: ${event}`)
+      }
+    },
+  })
+  globalThis.__mijingEnsureComfyUiWorker = options => comfyUiManager.ensure(options)
+
   const devUrl = process.env.DESKTOP_DEV_URL
   backendUrl = process.env.DESKTOP_BACKEND_URL || ''
   if (!devUrl) backendUrl = await startBundledBackend(getRuntimeRoot())
   else await waitForHealth(backendUrl)
   createMainWindow(devUrl || backendUrl)
+
+  comfyUiManager.ensure()
+    .catch(error => {
+      writeLog('warn', 'MiniMax H3 Worker failed to start; the app will continue.', error)
+    })
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
@@ -244,11 +314,16 @@ if (!hasSingleInstanceLock) {
     mainWindow.focus()
   })
   app.whenReady().then(start).catch(error => {
-    writeLog('error', 'Failed to start 谜镜 Studio.', error)
-    dialog.showErrorBox('谜镜 Studio 启动失败', error instanceof Error ? error.message : String(error))
+    writeLog('error', 'Failed to start eggfans Studio.', error)
+    dialog.showErrorBox('eggfans Studio 启动失败', error instanceof Error ? error.message : String(error))
     app.quit()
   })
-  app.on('before-quit', saveWindowState)
+  app.on('before-quit', () => {
+    isQuitting = true
+    saveWindowState()
+    comfyUiManager?.close()
+    delete globalThis.__mijingEnsureComfyUiWorker
+  })
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()
   })

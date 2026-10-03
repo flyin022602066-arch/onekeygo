@@ -54,7 +54,7 @@ export interface VideoProviderAdapter {
 
   buildPollRequest(config: AIConfig, taskId: string): ProviderRequest
 
-  parsePollResponse(result: any): VideoPollResponse
+  parsePollResponse(result: any, config?: AIConfig): VideoPollResponse
 
   extractVideoUrl(result: any): string | null
 }
@@ -100,8 +100,36 @@ export interface VideoGenerationRecord {
   firstFrameUrl?: string | null
   lastFrameUrl?: string | null
   referenceImageUrls?: string | null
+  /** Temporary AutoDL-only source mapping used for inline image fallback. */
+  autodlReferenceImages?: Array<{
+    url: string
+    source?: string | null
+  }> | null
+  /** Optional AutoDL workflow reference audio URLs (ref_audio_0..2). */
+  referenceAudioUrls?: string | null
   duration?: number | null
   aspectRatio?: string | null
+  megapixels?: number | null
+  steps?: number | null
+  loraStrength?: number | null
+  /** Optional deterministic seed forwarded by providers that support it. */
+  seed?: number | null
+  /** Optional local H3 serial-chain metadata. */
+  sequenceRunId?: number | null
+  sequenceStepIndex?: number | null
+  continuityMode?: string | null
+  /** Relative H3 Motion Context latent directory (under ComfyUI output). */
+  latentPath?: string | null
+  latentClipIndex?: number | null
+  /** ComfyUI input filenames uploaded for this generation. */
+  comfyImageNames?: {
+    referenceImages?: string[]
+  } | null
+  comfyVideoName?: string | null
+  comfyH3RefinementAvailable?: boolean
+  comfyH3VideoTailAvailable?: boolean
+  /** Optional Sage Attention patch detected during local H3 preflight. */
+  comfyH3SageAttentionNode?: 'PathchSageAttentionKJ' | 'MiniMaxH3MemoryEfficientSageAttentionPatch' | null
   // ... 其他字段
 }
 
@@ -128,6 +156,7 @@ export interface VideoPollResponse {
   status: 'pending' | 'processing' | 'completed' | 'failed'
   videoUrl?: string
   error?: string
+  warning?: string
 }
 
 /**

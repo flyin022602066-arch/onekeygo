@@ -38,6 +38,7 @@ export const episodes = sqliteTable('episodes', {
   audioConfigId: integer('audio_config_id'),
   dubbingEnabled: integer('dubbing_enabled', { mode: 'boolean' }).default(false),
   breakdownMode: text('breakdown_mode').default('standard'),
+  breakdownLanguage: text('breakdown_language').default('zh'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   deletedAt: text('deleted_at'),
@@ -47,6 +48,8 @@ export const characters = sqliteTable('characters', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   dramaId: integer('drama_id').notNull(),
   name: text('name').notNull(),
+  // JSON array of alternate names used by bilingual storyboard prompts.
+  aliases: text('aliases'),
   role: text('role'),
   description: text('description'),
   appearance: text('appearance'),
@@ -86,11 +89,19 @@ export const episodeScenes = sqliteTable('episode_scenes', {
   createdAt: text('created_at').notNull(),
 })
 
+export const episodeProps = sqliteTable('episode_props', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  episodeId: integer('episode_id').notNull(),
+  propId: integer('prop_id').notNull(),
+  createdAt: text('created_at').notNull(),
+})
+
 export const scenes = sqliteTable('scenes', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   dramaId: integer('drama_id').notNull(),
   episodeId: integer('episode_id'),
   location: text('location').notNull(),
+  aliases: text('aliases'),
   time: text('time').notNull(),
   prompt: text('prompt').notNull(),
   storyboardCount: integer('storyboard_count').default(1),
@@ -131,6 +142,9 @@ export const storyboards = sqliteTable('storyboards', {
   ttsAudioUrl: text('tts_audio_url'),
   subtitleUrl: text('subtitle_url'),
   composedVideoUrl: text('composed_video_url'),
+  // Generation id used to produce composed_video_url.  This prevents a
+  // previous composition from being reused after a shot is regenerated.
+  composedVideoGenerationId: integer('composed_video_generation_id'),
   status: text('status').default('pending'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
@@ -259,10 +273,15 @@ export const videoGenerations = sqliteTable('video_generations', {
   firstFrameUrl: text('first_frame_url'),
   lastFrameUrl: text('last_frame_url'),
   referenceImageUrls: text('reference_image_urls'),
+  referenceAudioUrls: text('reference_audio_urls'),
   duration: integer('duration'),
   fps: integer('fps'),
   resolution: text('resolution'),
   aspectRatio: text('aspect_ratio'),
+  megapixels: real('megapixels'),
+  steps: integer('steps'),
+  /** Per-generation MiniMax H3 LoRA strength (0-1). */
+  loraStrength: real('lora_strength'),
   style: text('style'),
   motionLevel: integer('motion_level'),
   cameraMotion: text('camera_motion'),
@@ -279,6 +298,13 @@ export const videoGenerations = sqliteTable('video_generations', {
   updatedAt: text('updated_at').notNull(),
   completedAt: text('completed_at'),
   deletedAt: text('deleted_at'),
+  /** Serial-run metadata used by the optional local H3 latent-chain path. */
+  sequenceRunId: integer('sequence_run_id'),
+  sequenceStepIndex: integer('sequence_step_index'),
+  continuityMode: text('continuity_mode'),
+  latentPath: text('latent_path'),
+  latentClipIndex: integer('latent_clip_index'),
+  referenceVideoLocalPath: text('reference_video_local_path'),
 })
 
 export const videoSequenceRuns = sqliteTable('video_sequence_runs', {
@@ -289,6 +315,13 @@ export const videoSequenceRuns = sqliteTable('video_sequence_runs', {
   model: text('model'),
   configId: integer('config_id'),
   aspectRatio: text('aspect_ratio'),
+  megapixels: real('megapixels'),
+  samplingSteps: integer('sampling_steps'),
+  /** LoRA strength captured when this serial run starts (0-1). */
+  loraStrength: real('lora_strength'),
+  /** standard_r2v keeps the existing PNG Picture-1 chain; latent_plus uses
+   * H3 Motion Context Save/Load + Trim between shots. */
+  continuityMode: text('continuity_mode').notNull().default('standard_r2v'),
   status: text('status').notNull().default('queued'),
   currentIndex: integer('current_index').notNull().default(0),
   totalCount: integer('total_count').notNull().default(0),
@@ -315,6 +348,13 @@ export const videoSequenceSteps = sqliteTable('video_sequence_steps', {
   tailFrameUrl: text('tail_frame_url'),
   tailFrameAssetId: text('tail_frame_asset_id'),
   tailFrameAssetUri: text('tail_frame_asset_uri'),
+  // Local MiniMax H3 uses an ordinary R2V continuity picture.  Keep this
+  // separate from the legacy remote-provider tail-frame columns so local
+  // runs never expose or reuse first/last-frame semantics.
+  continuityReferenceLocalPath: text('continuity_reference_local_path'),
+  continuityReferenceUrl: text('continuity_reference_url'),
+  continuityReferenceAssetId: text('continuity_reference_asset_id'),
+  continuityReferenceAssetUri: text('continuity_reference_asset_uri'),
   assetIds: text('asset_ids'),
   assetRefs: text('asset_refs'),
   referenceImageUrls: text('reference_image_urls'),
@@ -323,6 +363,9 @@ export const videoSequenceSteps = sqliteTable('video_sequence_steps', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   completedAt: text('completed_at'),
+  /** Deterministic H3 Motion Context latent slot for this completed shot. */
+  latentPath: text('latent_path'),
+  latentClipIndex: integer('latent_clip_index'),
 })
 
 export const videoMerges = sqliteTable('video_merges', {
@@ -347,6 +390,8 @@ export const props = sqliteTable('props', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   dramaId: integer('drama_id').notNull(),
   name: text('name').notNull(),
+  // JSON array of alternate names used by bilingual storyboard prompts.
+  aliases: text('aliases'),
   type: text('type'),
   description: text('description'),
   prompt: text('prompt'),

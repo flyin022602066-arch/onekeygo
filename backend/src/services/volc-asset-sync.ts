@@ -1,7 +1,8 @@
 import { and, eq } from 'drizzle-orm'
+import fs from 'node:fs'
 import { db, schema } from '../db/index.js'
 import { now } from '../utils/response.js'
-import { getStaticRelativePath, parseDataUrl, readLocalFile } from '../utils/storage.js'
+import { getAbsolutePath, getStaticRelativePath, parseDataUrl, readLocalFile } from '../utils/storage.js'
 import { logTaskPayload, logTaskProgress, logTaskWarn, redactUrl } from '../utils/task-logger.js'
 import { joinProviderUrl } from './adapters/url.js'
 import type { AIConfig } from './ai.js'
@@ -47,6 +48,10 @@ type SyncVolcCharacterAssetOptions = {
   force?: boolean
   groupName?: string | null
   syncAsset?: (input: VolcAssetReferenceInput) => Promise<SyncedVolcAsset>
+}
+
+type SyncVolcEntityAssetOptions = SyncVolcCharacterAssetOptions & {
+  episodeId?: number | null
 }
 
 interface PublicImageFile {
@@ -141,11 +146,12 @@ export async function syncVolcImageAsset(input: VolcAssetReferenceInput): Promis
 
   const existing = input.force ? null : findExistingAsset(input)
   if (existing?.providerAssetId) {
+    const assetUri = normalizeVolcAssetUri(existing.assetUri, existing.providerAssetId)
     return {
       localAssetId: existing.id,
       localName: existing.name || null,
       providerAssetId: existing.providerAssetId,
-      assetUri: existing.assetUri,
+      assetUri,
       providerGroupId: existing.providerGroupId,
       localGroupId: existing.localGroupId,
       groupName: existing.groupName || buildGroupName(input),
@@ -179,6 +185,7 @@ export async function syncVolcImageAsset(input: VolcAssetReferenceInput): Promis
   }
 
   const ts = now()
+  const assetUri = normalizeVolcAssetUri(asset.assetUri, asset.providerAssetId)
   const res = db.insert(schema.assets).values({
     dramaId: input.dramaId ?? null,
     episodeId: input.episodeId ?? null,
@@ -194,7 +201,7 @@ export async function syncVolcImageAsset(input: VolcAssetReferenceInput): Promis
     mimeType: hosted.mimeType || null,
     provider: 'volcengine_asset',
     providerAssetId: asset.providerAssetId,
-    assetUri: asset.assetUri || null,
+    assetUri,
     providerGroupId: asset.providerGroupId || group.providerGroupId || null,
     localGroupId: asset.localGroupId || group.localGroupId,
     groupName,
@@ -222,7 +229,7 @@ export async function syncVolcImageAsset(input: VolcAssetReferenceInput): Promis
     localAssetId: Number(res.lastInsertRowid),
     localName: input.name || null,
     providerAssetId: asset.providerAssetId,
-    assetUri: asset.assetUri,
+    assetUri,
     providerGroupId: asset.providerGroupId || group.providerGroupId,
     localGroupId: asset.localGroupId || group.localGroupId,
     groupName,
@@ -271,7 +278,11 @@ export async function syncVolcCharacterAssetForCharacter(
     .all()
   if (!character || character.deletedAt) throw new Error('角色不存在')
 
-  const imageUrl = String(character.imageUrl || character.localPath || '').trim()
+  // A manual upload is the character's source of truth.  image_url can be a
+  // stale generated/provider URL after a retry, while local_path still points
+  // at the exact file the user selected. Prefer it whenever it is readable so
+  // remote asset sync cannot silently replace the protagonist's clothing.
+  const imageUrl = preferredCharacterImageUrl(character)
   if (!imageUrl) throw new Error('角色缺少形象图，无法上传火山角色资产库')
 
   const groupName = options.groupName || buildCharacterGroupName(character.dramaId)
@@ -324,6 +335,133 @@ export async function syncVolcCharacterAssetForCharacter(
       .run()
     throw err
   }
+}
+
+function preferredCharacterImageUrl(character: { imageUrl?: string | null; localPath?: string | null }) {
+  const localPath = String(character.localPath || '').trim()
+  const staticPath = getStaticRelativePath(localPath)
+  if (staticPath) {
+    try {
+      if (fs.existsSync(getAbsolutePath(staticPath))) return staticPath
+    } catch {
+      // Fall through to image_url for legacy rows whose local file was removed.
+    }
+  }
+  return String(character.imageUrl || localPath || '').trim()
+}
+
+export async function syncVolcSceneAssetForScene(
+  sceneId: number,
+  options: SyncVolcEntityAssetOptions = {},
+): Promise<SyncedVolcAsset> {
+  const [scene] = db.select().from(schema.scenes)
+    .where(eq(schema.scenes.id, sceneId))
+    .all()
+  if (!scene || scene.deletedAt) throw new Error('场景不存在')
+
+  const imageUrl = String(scene.imageUrl || scene.localPath || '').trim()
+  if (!imageUrl) throw new Error('场景缺少图片，无法上传火山素材库')
+
+  const syncAsset = options.syncAsset || syncVolcImageAsset
+  return syncAsset({
+    url: imageUrl,
+    name: `场景-${String(scene.location || scene.id).trim()}`,
+    category: 'scene',
+    assetType: 'Image',
+    dramaId: scene.dramaId,
+    episodeId: options.episodeId ?? scene.episodeId,
+    groupName: options.groupName,
+    source: 'volc:autoSceneImage',
+    force: options.force,
+  })
+}
+
+export async function syncVolcPropAssetForProp(
+  propId: number,
+  options: SyncVolcEntityAssetOptions = {},
+): Promise<SyncedVolcAsset> {
+  const [prop] = db.select().from(schema.props)
+    .where(eq(schema.props.id, propId))
+    .all()
+  if (!prop || prop.deletedAt) throw new Error('道具不存在')
+
+  const imageUrl = String(prop.imageUrl || prop.localPath || '').trim()
+  if (!imageUrl) throw new Error('道具缺少图片，无法上传火山素材库')
+
+  const episodeId = options.episodeId ?? db.select().from(schema.episodeProps)
+    .where(eq(schema.episodeProps.propId, prop.id))
+    .all()
+    .sort((a, b) => b.id - a.id)[0]?.episodeId ?? null
+  const syncAsset = options.syncAsset || syncVolcImageAsset
+  return syncAsset({
+    url: imageUrl,
+    name: `道具-${String(prop.name || prop.id).trim()}`,
+    category: 'prop',
+    assetType: 'Image',
+    dramaId: prop.dramaId,
+    episodeId,
+    groupName: options.groupName,
+    source: 'volc:autoPropImage',
+    force: options.force,
+  })
+}
+
+export async function syncMissingVolcSemanticAssets(reason = 'startup') {
+  if (!getVolcAssetConfig()) {
+    logTaskProgress('VolcAssetSync', 'semantic-backfill-skipped', { reason, cause: 'asset-config-missing' })
+    return { total: 0, okCount: 0, failedCount: 0, skipped: true }
+  }
+
+  const existingSources = new Set(db.select().from(schema.assets).all()
+    .filter(asset => asset.provider === 'volcengine_asset' && !!asset.providerAssetId && !asset.deletedAt)
+    .map(asset => String(asset.sourceUrl || '').trim())
+    .filter(Boolean))
+  const pendingScenes = db.select().from(schema.scenes).all()
+    .filter(scene => !scene.deletedAt && !!String(scene.imageUrl || scene.localPath || '').trim())
+    .filter(scene => !existingSources.has(String(scene.imageUrl || scene.localPath || '').trim()))
+  const pendingProps = db.select().from(schema.props).all()
+    .filter(prop => !prop.deletedAt && !!String(prop.imageUrl || prop.localPath || '').trim())
+    .filter(prop => !existingSources.has(String(prop.imageUrl || prop.localPath || '').trim()))
+  let okCount = 0
+  let failedCount = 0
+
+  for (const scene of pendingScenes) {
+    try {
+      await syncVolcSceneAssetForScene(scene.id)
+      okCount += 1
+    } catch (err) {
+      failedCount += 1
+      logTaskWarn('VolcAssetSync', 'scene-backfill-failed', {
+        reason,
+        sceneId: scene.id,
+        error: err instanceof Error ? err.message : String(err || 'unknown error'),
+      })
+    }
+  }
+  for (const prop of pendingProps) {
+    try {
+      await syncVolcPropAssetForProp(prop.id)
+      okCount += 1
+    } catch (err) {
+      failedCount += 1
+      logTaskWarn('VolcAssetSync', 'prop-backfill-failed', {
+        reason,
+        propId: prop.id,
+        error: err instanceof Error ? err.message : String(err || 'unknown error'),
+      })
+    }
+  }
+
+  const total = pendingScenes.length + pendingProps.length
+  logTaskProgress('VolcAssetSync', 'semantic-backfill-complete', { reason, total, okCount, failedCount })
+  return { total, okCount, failedCount, skipped: false }
+}
+
+function normalizeVolcAssetUri(assetUri: string | null | undefined, providerAssetId: string) {
+  const value = String(assetUri || '').trim().replace(/^@+/, '')
+  if (!value) return `Asset://${providerAssetId}`
+  const match = value.match(/^asset:\/\/(.+)$/i)
+  return match ? `Asset://${match[1]}` : value
 }
 
 function findExistingAsset(input: VolcAssetReferenceInput) {

@@ -36,3 +36,15 @@ export function isExecutableFile(filePath) {
     return false
   }
 }
+
+export function applyBundledMediaEnvironment(env, media) {
+  for (const [key, value] of [
+    ['FFMPEG_PATH', media?.ffmpeg],
+    ['FFPROBE_PATH', media?.ffprobe],
+  ]) {
+    const normalized = String(value || '').trim()
+    if (normalized) env[key] = normalized
+    else delete env[key]
+  }
+  return env
+}

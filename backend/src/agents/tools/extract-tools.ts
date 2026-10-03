@@ -14,6 +14,7 @@ import { eq, and } from 'drizzle-orm'
 import { now } from '../../utils/response.js'
 import { logTaskProgress, logTaskSuccess } from '../../utils/task-logger.js'
 import { normalizeSceneEnvironmentDescription } from '../../services/scene-image-prompt.js'
+import { assetBindingTerms, assetNamesMatch, serializeAssetAliases } from '../../services/asset-aliases.js'
 
 export type ExtractionSource = 'raw' | 'script'
 
@@ -42,9 +43,8 @@ function linkCharToEpisode(episodeId: number, characterId: number) {
 }
 
 function replaceEpisodeCharacterLinks(episodeId: number, characterIds: Set<number>) {
-  db.delete(schema.episodeCharacters)
-    .where(eq(schema.episodeCharacters.episodeId, episodeId))
-    .run()
+  // Project assets are shared across episodes. Re-extraction only adds links
+  // for assets found in this episode and never removes existing references.
   for (const characterId of characterIds) linkCharToEpisode(episodeId, characterId)
 }
 
@@ -59,10 +59,17 @@ function linkSceneToEpisode(episodeId: number, sceneId: number) {
 }
 
 function replaceEpisodeSceneLinks(episodeId: number, sceneIds: Set<number>) {
-  db.delete(schema.episodeScenes)
-    .where(eq(schema.episodeScenes.episodeId, episodeId))
-    .run()
   for (const sceneId of sceneIds) linkSceneToEpisode(episodeId, sceneId)
+}
+
+function linkPropToEpisode(episodeId: number, propId: number) {
+  const existing = db.select().from(schema.episodeProps)
+    .where(and(eq(schema.episodeProps.episodeId, episodeId), eq(schema.episodeProps.propId, propId))).all()
+  if (!existing.length) db.insert(schema.episodeProps).values({ episodeId, propId, createdAt: now() }).run()
+}
+
+function replaceEpisodePropLinks(episodeId: number, propIds: Set<number>) {
+  for (const propId of propIds) linkPropToEpisode(episodeId, propId)
 }
 
 export function createExtractTools(
@@ -158,6 +165,18 @@ export function createExtractTools(
     },
   })
 
+  const readExistingProps = createTool({
+    id: 'read_existing_props',
+    description: 'Read all props already existing in this drama project for deduplication.',
+    inputSchema: z.object({}),
+    execute: async () => {
+      const linkedIds = new Set(db.select().from(schema.episodeProps)
+        .where(eq(schema.episodeProps.episodeId, episodeId)).all().map(link => link.propId))
+      const props = db.select().from(schema.props).where(eq(schema.props.dramaId, dramaId)).all().filter(prop => !prop.deletedAt)
+      return { count: props.length, props, current_episode_props: props.filter(prop => linkedIds.has(prop.id)) }
+    },
+  })
+
   // 4. 智能保存角色（按名字去重，与现有数据合并）
   const saveDedupCharacters = createTool({
     id: 'save_dedup_characters',
@@ -165,6 +184,8 @@ export function createExtractTools(
     inputSchema: z.object({
       characters: z.array(z.object({
         name: z.string(),
+        aliases: z.union([z.array(z.string()), z.string()]).optional(),
+        english_name: z.string().optional(),
         role: z.string().optional(),
         description: z.string().optional(),
         appearance: z.string().optional(),
@@ -185,11 +206,16 @@ export function createExtractTools(
         const existing = db.select().from(schema.characters)
           .where(eq(schema.characters.dramaId, dramaId)).all()
           .filter(c => !c.deletedAt)
-          .find(c => c.name === char.name)
+          .find(c => c.name === char.name || assetNamesMatch(c, {
+            name: char.name,
+            aliases: char.aliases,
+            english_name: char.english_name,
+          }))
 
         if (existing) {
           // 已存在：合并信息，保留 ID
           db.update(schema.characters).set({
+            aliases: serializeAssetAliases(char.name, char.aliases, char.english_name, existing.aliases),
             role: char.role || existing.role,
             description: char.description || existing.description,
             appearance: char.appearance || existing.appearance,
@@ -203,6 +229,7 @@ export function createExtractTools(
           // 新增角色
           const res = db.insert(schema.characters).values({
             name: char.name,
+            aliases: serializeAssetAliases(char.name, char.aliases, char.english_name),
             role: char.role || '',
             description: char.description || '',
             appearance: char.appearance || '',
@@ -237,6 +264,8 @@ export function createExtractTools(
     inputSchema: z.object({
       scenes: z.array(z.object({
         location: z.string(),
+        aliases: z.union([z.array(z.string()), z.string()]).optional(),
+        english_name: z.string().optional(),
         time: z.string().optional(),
         prompt: z.string().optional(),
       })),
@@ -262,11 +291,17 @@ export function createExtractTools(
         const existing = db.select().from(schema.scenes)
           .where(eq(schema.scenes.dramaId, dramaId)).all()
           .filter(s => !s.deletedAt)
-          .find(s => s.location === scene.location && s.time === (scene.time || ''))
+          .find(s => (
+            (s.location === scene.location
+              || assetBindingTerms({ name: scene.location, aliases: scene.aliases, english_name: scene.english_name })
+                .some(term => assetBindingTerms({ name: s.location, aliases: s.aliases }).includes(term)))
+            && s.time === (scene.time || '')
+          ))
 
         if (existing) {
           db.update(schema.scenes).set({
             prompt: environmentPrompt,
+            aliases: serializeAssetAliases(scene.location, scene.aliases, scene.english_name, existing.aliases),
             updatedAt: ts,
           }).where(eq(schema.scenes.id, existing.id)).run()
           linkSceneToEpisode(episodeId, existing.id)
@@ -282,6 +317,7 @@ export function createExtractTools(
           const res = db.insert(schema.scenes).values({
             dramaId,
             location: scene.location,
+            aliases: serializeAssetAliases(scene.location, scene.aliases, scene.english_name),
             time: scene.time || '',
             prompt: environmentPrompt,
             createdAt: ts,
@@ -306,11 +342,72 @@ export function createExtractTools(
     },
   })
 
+  const saveDedupProps = createTool({
+    id: 'save_dedup_props',
+    description: 'Save extracted props only when the same named prop appears at least twice in the current script.',
+    inputSchema: z.object({
+      props: z.array(z.object({
+        name: z.string(),
+        aliases: z.union([z.array(z.string()), z.string()]).optional(),
+        english_name: z.string().optional(),
+        type: z.string().optional(),
+        description: z.string().optional(),
+        prompt: z.string().optional(),
+        mention_count: z.number().int().min(0).optional(),
+      })),
+    }),
+    execute: async ({ props }) => {
+      const ts = now()
+      const results = { created: 0, merged: 0, skipped: 0 }
+      const desiredPropIds = new Set<number>()
+      for (const prop of props) {
+        if (Number(prop.mention_count || 0) < 2) { results.skipped++; continue }
+        const propName = prop.name.trim()
+        if (!propName) { results.skipped++; continue }
+        const existing = db.select().from(schema.props).where(eq(schema.props.dramaId, dramaId)).all()
+          .filter(item => !item.deletedAt).find(item => item.name.trim() === propName || assetNamesMatch(item, {
+            name: propName,
+            aliases: prop.aliases,
+            english_name: prop.english_name,
+          }))
+        if (existing) {
+          db.update(schema.props).set({
+            aliases: serializeAssetAliases(prop.name, prop.aliases, prop.english_name, existing.aliases),
+            type: prop.type || existing.type,
+            description: prop.description || existing.description,
+            prompt: prop.prompt || existing.prompt,
+            updatedAt: ts,
+          }).where(eq(schema.props.id, existing.id)).run()
+          desiredPropIds.add(existing.id)
+          results.merged++
+        } else {
+          const result = db.insert(schema.props).values({
+            dramaId,
+            name: propName,
+            aliases: serializeAssetAliases(propName, prop.aliases, prop.english_name),
+            type: prop.type || '',
+            description: prop.description || '',
+            prompt: prop.prompt || prop.description || prop.name,
+            createdAt: ts,
+            updatedAt: ts,
+          }).run()
+          desiredPropIds.add(Number(result.lastInsertRowid))
+          results.created++
+        }
+      }
+      replaceEpisodePropLinks(episodeId, desiredPropIds)
+      logTaskSuccess('ExtractTool', 'save-props-complete', { episodeId, ...results })
+      return { message: `道具保存完成：新增 ${results.created}，合并 ${results.merged}，跳过 ${results.skipped}`, ...results }
+    },
+  })
+
   return {
     readScriptForExtraction,
     readExistingCharacters,
     readExistingScenes,
+    readExistingProps,
     saveDedupCharacters,
     saveDedupScenes,
+    saveDedupProps,
   }
 }

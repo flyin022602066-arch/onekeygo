@@ -10,6 +10,7 @@ import { resolveGenerationConfigId } from './generationConfig.js'
 import {
   haveStoryboardGenerationInputsChanged,
   invalidateStoryboardGenerations,
+  cancelStaleVideoSequenceRuns,
   storyboardGenerationResetValues,
 } from '../services/storyboard-generation-invalidation.js'
 import { withVisualStyleLock } from '../services/visual-style.js'
@@ -40,6 +41,9 @@ function getStoryboardCharacterIds(storyboardId: number) {
 }
 
 function validateStoryboardBindings(episodeId: number, sceneId: number | null | undefined, characterIds: number[] | undefined) {
+  const [episode] = db.select({ dramaId: schema.episodes.dramaId })
+    .from(schema.episodes)
+    .where(eq(schema.episodes.id, episodeId)).all()
   const episodeSceneIds = new Set(
     db.select().from(schema.episodeScenes)
       .where(eq(schema.episodeScenes.episodeId, episodeId)).all()
@@ -50,6 +54,18 @@ function validateStoryboardBindings(episodeId: number, sceneId: number | null | 
       .where(eq(schema.episodeCharacters.episodeId, episodeId)).all()
       .map(link => link.characterId),
   )
+  if (episode) {
+    for (const scene of db.select({ id: schema.scenes.id, deletedAt: schema.scenes.deletedAt })
+      .from(schema.scenes)
+      .where(eq(schema.scenes.dramaId, episode.dramaId)).all()) {
+      if (!scene.deletedAt) episodeSceneIds.add(scene.id)
+    }
+    for (const character of db.select({ id: schema.characters.id, deletedAt: schema.characters.deletedAt })
+      .from(schema.characters)
+      .where(eq(schema.characters.dramaId, episode.dramaId)).all()) {
+      if (!character.deletedAt) episodeCharacterIds.add(character.id)
+    }
+  }
 
   if (sceneId != null && !episodeSceneIds.has(sceneId)) {
     throw new Error('scene_id 必须来自当前集已关联场景')
@@ -105,6 +121,7 @@ app.post('/', async (c) => {
     updatedAt: ts,
   }).run()
   syncStoryboardCharacters(Number(res.lastInsertRowid), body.character_ids || [])
+  cancelStaleVideoSequenceRuns(Number(body.episode_id), ts)
   const [result] = db.select().from(schema.storyboards)
     .where(eq(schema.storyboards.id, Number(res.lastInsertRowid))).all()
   logTaskSuccess('StoryboardAPI', 'create', {
@@ -178,7 +195,11 @@ app.put('/:id', async (c) => {
   )
   if (generationInputsChanged) {
     invalidateStoryboardGenerations(id, ts)
+    cancelStaleVideoSequenceRuns(storyboard.episodeId, ts)
     Object.assign(updates, storyboardGenerationResetValues(ts))
+    db.update(schema.episodes)
+      .set({ videoUrl: null, updatedAt: ts })
+      .where(eq(schema.episodes.id, storyboard.episodeId)).run()
   }
   db.update(schema.storyboards).set(updates).where(eq(schema.storyboards.id, id)).run()
   if ('character_ids' in body) syncStoryboardCharacters(id, body.character_ids || [])
@@ -260,7 +281,11 @@ app.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'))
   logTaskStart('StoryboardAPI', 'delete', { storyboardId: id })
   db.delete(schema.storyboardCharacters).where(eq(schema.storyboardCharacters.storyboardId, id)).run()
+  const [deletedStoryboard] = db.select({ episodeId: schema.storyboards.episodeId })
+    .from(schema.storyboards)
+    .where(eq(schema.storyboards.id, id)).all()
   db.delete(schema.storyboards).where(eq(schema.storyboards.id, id)).run()
+  if (deletedStoryboard?.episodeId) cancelStaleVideoSequenceRuns(deletedStoryboard.episodeId, now())
   logTaskSuccess('StoryboardAPI', 'delete', { storyboardId: id })
   return success(c)
 })

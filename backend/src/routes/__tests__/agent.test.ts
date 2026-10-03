@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   assertRequiredToolCompleted,
+  assertStoryboardPersistenceVerified,
   buildAgentGenerateCallOptions,
   buildAgentGenerateOptions,
   buildMijingTextFallbackConfig,
@@ -9,6 +10,7 @@ import {
   normalizeToolName,
   normalizeToolResult,
   normalizeEggfansTextFallbackBaseUrl,
+  normalizeStoryboardDurationPolicy,
 } from '../agent.js'
 
 test('buildAgentGenerateOptions maps agent max_tokens and max_iterations to model options', () => {
@@ -87,13 +89,103 @@ test('assertRequiredToolCompleted rejects script rewrite that did not save conte
   )
 })
 
-test('assertRequiredToolCompleted requires both extraction save operations', () => {
+test('assertRequiredToolCompleted requires all extraction save operations', () => {
   assert.throws(
     () => assertRequiredToolCompleted('extractor', [
       { toolName: 'save_dedup_characters', result: '{}' },
     ]),
     /save_dedup_scenes/,
   )
+  assert.throws(
+    () => assertRequiredToolCompleted('extractor', [
+      { toolName: 'save_dedup_characters', result: '{}' },
+      { toolName: 'save_dedup_scenes', result: '{}' },
+    ]),
+    /save_dedup_props/,
+  )
+})
+
+test('storyboard completion requires the persistence read-back flag', () => {
+  assert.doesNotThrow(() => assertStoryboardPersistenceVerified([
+    { toolName: 'save_storyboards', result: '{"count":2,"persistence_verified":true}' },
+  ]))
+  assert.throws(
+    () => assertStoryboardPersistenceVerified([
+      { toolName: 'save_storyboards', result: '{"count":2,"persistence_verified":false}' },
+    ]),
+    /校验未通过/,
+  )
+  assert.throws(
+    () => assertStoryboardPersistenceVerified([
+      { toolName: 'save_storyboards', result: '{"count":2}' },
+    ]),
+    /校验未通过/,
+  )
+})
+
+test('local MiniMax storyboard mode ignores caller duration overrides', () => {
+  assert.deepEqual(normalizeStoryboardDurationPolicy({
+    storyboard_policy: { mode: 'minimax_local_8s', shot_duration: 5, language: 'en' },
+  }), {
+    mode: 'minimax_local_8s',
+    shotDuration: 8,
+    shotDurationMin: 8,
+    shotDurationMax: 10,
+    language: 'en',
+  })
+})
+
+test('MiniMax storyboard language falls back to Chinese for unsupported values', () => {
+  assert.equal(normalizeStoryboardDurationPolicy({
+    storyboard_policy: { mode: 'minimax_local_8s', language: 'fr' },
+  })?.language, 'zh')
+})
+
+test('normalizes direct MiniMax language aliases without leaking provider frame modes', () => {
+  assert.deepEqual(normalizeStoryboardDurationPolicy({
+    storyboard_mode: 'minimax_local_8s_en',
+  }), {
+    mode: 'minimax_local_8s',
+    shotDuration: 8,
+    shotDurationMin: 8,
+    shotDurationMax: 10,
+    language: 'en',
+  })
+  assert.deepEqual(normalizeStoryboardDurationPolicy({
+    breakdown_mode: 'minimax_local_8s_zh',
+  }), {
+    mode: 'minimax_local_8s',
+    shotDuration: 8,
+    shotDurationMin: 8,
+    shotDurationMax: 10,
+    language: 'zh',
+  })
+})
+
+test('explicit storyboard modes stay isolated from the selected video model', () => {
+  assert.deepEqual(normalizeStoryboardDurationPolicy({
+    breakdown_mode: 'standard',
+    video_model: 'grok-video-3-10s',
+    video_provider: 'eggfans',
+  }), { mode: 'standard' })
+  assert.deepEqual(normalizeStoryboardDurationPolicy({
+    breakdown_mode: 'full',
+    video_model: 'grok-video-3-10s',
+    video_provider: 'eggfans',
+  }), { mode: 'full' })
+  assert.deepEqual(normalizeStoryboardDurationPolicy({
+    breakdown_mode: 'grok_3min',
+    video_model: 'veo3.1',
+  }), {
+    mode: 'grok_3min',
+    shotDuration: 10,
+    maxTotalDuration: 180,
+    maxShots: 18,
+  })
+  assert.deepEqual(normalizeStoryboardDurationPolicy({
+    breakdown_mode: 'unrecognized_mode',
+    video_model: 'grok-video-3-10s',
+  }), { mode: 'standard' })
 })
 
 test('normalizes Mastra stream chunks from the payload envelope', () => {
@@ -112,6 +204,7 @@ test('normalizes Mastra stream chunks from the payload envelope', () => {
 test('normalizes Mastra camelCase tool ids to registered snake_case ids', () => {
   assert.equal(normalizeToolName({ payload: { toolName: 'saveDedupCharacters' } }), 'save_dedup_characters')
   assert.equal(normalizeToolName({ payload: { toolName: 'saveDedupScenes' } }), 'save_dedup_scenes')
+  assert.equal(normalizeToolName({ payload: { toolName: 'saveDedupProps' } }), 'save_dedup_props')
 })
 
 test('does not mistake Mastra chunk types for tool names', () => {
@@ -147,7 +240,7 @@ test('Mijing schema failure can use configured Eggfans text without changing act
 
   assert.equal(fallback?.provider, 'eggfans')
   assert.equal(fallback?.model, 'gpt-5.5')
-  assert.equal(fallback?.baseUrl, 'https://eggfans.com')
+  assert.equal(fallback?.baseUrl, 'https://api.eggfans.org')
 })
 
 test('Mijing fallback stays disabled for unrelated provider failures', () => {

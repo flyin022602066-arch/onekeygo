@@ -53,3 +53,27 @@ test('withVisualStyleLock keeps content and replaces any previous lock', () => {
 test('unknown legacy style values safely use the realistic project default', () => {
   assert.equal(getVisualStyleSpec('现实主义年代剧').value, 'realistic')
 })
+
+test('professional visual style catalog resolves every new project style', () => {
+  const styles = [
+    ['documentary', '纪录片纪实'],
+    ['commercial', '商业广告'],
+    ['film_noir', '黑色电影'],
+    ['vintage_film', '复古胶片'],
+    ['ink_wash', '国风水墨'],
+    ['3d_animation', '3D动画'],
+    ['stop_motion', '定格动画'],
+    ['oriental_period', '东方古风'],
+    ['fantasy_epic', '奇幻史诗'],
+    ['sci_fi', '科幻未来'],
+    ['cyberpunk', '赛博朋克'],
+  ]
+
+  for (const [value, label] of styles) {
+    const spec = getVisualStyleSpec(value)
+    assert.equal(spec.value, value)
+    assert.equal(spec.label, label)
+    assert.ok(spec.positive.length > 20)
+    assert.ok(spec.negative.length > 10)
+  }
+})

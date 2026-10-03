@@ -1,10 +1,14 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { db, schema } from '../db/index.js'
 import { eq } from 'drizzle-orm'
 import { getActiveConfig, getConfigById } from './ai.js'
 import { now } from '../utils/response.js'
-import { downloadFile, readImageAsCompressedDataUrl } from '../utils/storage.js'
+import { downloadFile, getAbsolutePath, getStaticRelativePath, parseDataUrl, readImageAsCompressedDataUrl, readLocalFile } from '../utils/storage.js'
 import { getVideoAdapter } from './adapters/registry'
-import type { AIConfig } from './adapters/types'
+import type { AIConfig, VideoGenerationRecord } from './adapters/types'
 import { logTaskError, logTaskPayload, logTaskProgress, logTaskStart, logTaskSuccess, logTaskWarn, redactUrl } from '../utils/task-logger.js'
 import { ensurePublicImageUrl, syncVolcCharacterAssetForCharacter, syncVolcImageAsset } from './volc-asset-sync.js'
 import type { PublicImageUploadOptions, PublicImageUrlResult, SyncedVolcAsset, VolcAssetReferenceInput } from './volc-asset-sync.js'
@@ -12,18 +16,75 @@ import { withVisualStyleLock } from './visual-style.js'
 import { withTkOverseasVisualLock } from './overseas-visual.js'
 import { appendStoryboardDialoguePrompt } from './video-dialogue-prompt.js'
 import { isLatestGeneration } from './generation-freshness.js'
+import { ensureComfyUiGenerationReady } from './comfyui-preflight.js'
+import type { ComfyUiSageAttentionNode } from './comfyui-preflight.js'
+import { canResumeBackgroundTasks } from '../utils/background-resume.js'
+import { applyLocalH3VideoContinuation } from './local-h3-continuation.js'
+import { inspectLocalH3Refinement, inspectLocalH3VideoTail } from './local-h3-refinement.js'
+import { getFfmpegBinary } from './media-tools.js'
+import { releaseComfyUiMemory } from './comfyui-memory.js'
 
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 45000
 const VIDEO_REQUEST_TIMEOUT_MS = 120_000
 const VIDEO_POLL_REQUEST_TIMEOUT_MS = 65_000
 const VIDEO_POLL_INTERVAL_MS = 10000
 const VIDEO_POLL_MAX_ATTEMPTS = 300
+const COMFYUI_MAX_CONSECUTIVE_TRANSPORT_FAILURES = 6
+// AutoDL's task itself is asynchronous, but the result endpoint can spend
+// longer than a normal hosted-provider poll while the remote GPU is waking.
+// Keep the timeout finite per HTTP request while allowing a substantially
+// longer total polling window (roughly 5 hours at the default interval).
+const AUTODL_VIDEO_POLL_MAX_ATTEMPTS = 1_800
 const RESUMABLE_VIDEO_STATUSES = new Set(['pending', 'processing', 'queued', 'running'])
 const activeVideoPollers = new Set<number>()
+const execFileAsync = promisify(execFile)
+
+// A full previous clip is a generic H3 reference and lets the model replay its
+// opening. Standard serial R2V needs only the previous shot's ending context;
+// keep a short, frame-accurate tail so the next shot can continue instead of
+// reconstructing the whole source clip.
+export const LOCAL_H3_CONTINUATION_TAIL_SECONDS = 2.5
+
+/** Keep provider-specific LoRA input bounded and preserve an explicit 0. */
+export function normalizeLoraStrength(value?: number | null) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return undefined
+  return Math.max(0, Math.min(1, Math.round(number * 100) / 100))
+}
+
+export function normalizeSeed(value?: number | string | null) {
+  if (value === undefined || value === null || String(value).trim() === '') return undefined
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 2_147_483_647) return undefined
+  return parsed
+}
 
 type VideoGenerationRow = typeof schema.videoGenerations.$inferSelect
 type AIConfigRow = typeof schema.aiServiceConfigs.$inferSelect
 type StaleVideoGenerationRecord = Pick<VideoGenerationRow, 'status' | 'taskId' | 'createdAt' | 'updatedAt' | 'provider'>
+
+/** A serial parent is authoritative for local H3 jobs. Once it reaches a
+ * terminal state, its child generation must never be resumed by a desktop
+ * restart or a later GET /videos/:id call. */
+export function isTerminalSequenceStatus(status?: string | null) {
+  return ['completed', 'failed', 'cancelled'].includes(String(status || '').trim().toLowerCase())
+}
+
+function sequenceRunIsTerminal(sequenceRunId?: number | null) {
+  const id = Number(sequenceRunId)
+  if (!Number.isFinite(id) || id <= 0) return false
+  const [run] = db.select({ status: schema.videoSequenceRuns.status })
+    .from(schema.videoSequenceRuns)
+    .where(eq(schema.videoSequenceRuns.id, id)).all()
+  return isTerminalSequenceStatus(run?.status)
+}
+
+function cancelVideoGenerationForSequence(id: number, reason = '串行任务已停止') {
+  db.update(schema.videoGenerations)
+    .set({ status: 'cancelled', errorMsg: reason, updatedAt: now() })
+    .where(eq(schema.videoGenerations.id, id))
+    .run()
+}
 
 type VideoPollOptions = {
   initialDelayMs?: number
@@ -37,14 +98,167 @@ export interface GenerateVideoParams {
   prompt: string
   model?: string
   referenceMode?: string
-  imageUrl?: string
-  firstFrameUrl?: string
-  lastFrameUrl?: string
-  referenceImageUrls?: string[]
+  imageUrl?: string | null
+  firstFrameUrl?: string | null
+  lastFrameUrl?: string | null
+  /** Accept both API/DB JSON strings and normalized arrays. */
+  referenceImageUrls?: string[] | string | null
+  /** AutoDL MiniMax H3 optional reference audio URLs (max 3). */
+  referenceAudioUrls?: string[] | string | null
   duration?: number
   aspectRatio?: string
+  megapixels?: number
+  steps?: number
+  /** Local MiniMax H3 LoRA strength, normalized to 0-1. */
+  loraStrength?: number
+  seed?: number | null
   configId?: number
   promptIsFinal?: boolean
+  /** Local ComfyUI MiniMax H3 jobs are only allowed from a serial run. */
+  sequenceRunId?: number | null
+  sequenceStepIndex?: number | null
+  continuityMode?: string | null
+  latentPath?: string | null
+  latentClipIndex?: number | null
+  referenceVideoLocalPath?: string | null
+}
+
+/** Fail closed for the local MiniMax H3 R2V contract. */
+export function assertLocalComfyUiR2VRecord(record: {
+  referenceMode?: string | null
+  imageUrl?: string | null
+  firstFrameUrl?: string | null
+  lastFrameUrl?: string | null
+  referenceImageUrls?: string[] | string | null
+  prompt?: string | null
+}) {
+  if (String(record.referenceMode || '').trim().toLowerCase() !== 'multiple') {
+    throw new Error('Local MiniMax H3 requires multi-reference R2V mode')
+  }
+  if (String(record.imageUrl || '').trim() || String(record.firstFrameUrl || '').trim() || String(record.lastFrameUrl || '').trim()) {
+    throw new Error('Local MiniMax H3 R2V forbids image_url/first_frame_url/last_frame_url')
+  }
+  let refs: unknown[] = []
+  const rawReferences: any = record.referenceImageUrls
+  if (Array.isArray(rawReferences)) refs = rawReferences
+  else if (typeof rawReferences === 'string' && rawReferences.trim()) {
+    try { const parsed = JSON.parse(rawReferences); refs = Array.isArray(parsed) ? parsed : [] } catch { throw new Error('Local MiniMax H3 R2V reference list is invalid JSON') }
+  }
+  if (!refs.length || refs.some(item => !String(item || '').trim())) {
+    throw new Error('Local MiniMax H3 R2V requires an ordered reference-image list')
+  }
+  if (/(?:FL2VA|\bI2V\b|first(?:[-_ ]frame)|last(?:[-_ ]frame)|tail(?:[-_ ]frame)|opening(?:[-_ ]frame)|R2V\s+OPENING\s+FRAME|frame[-_ ]?0|首尾帧|首帧|第一帧|尾帧|第\s*0\s*帧)/i.test(String(record.prompt || ''))) {
+    throw new Error('Local MiniMax H3 prompt contains disabled frame-slot terminology')
+  }
+  return true
+}
+
+/** AutoDL's hosted MiniMax workflow is also an ordered multi-reference R2V
+ * contract.  Keep this guard separate from the local ComfyUI guard: AutoDL
+ * must never inherit local worker/LoRA/latent settings, but it must reject
+ * stale single-image or first/last-frame fields before they reach the hosted
+ * workflow.
+ */
+export function assertAutoDlComfyUiR2VRecord(record: {
+  referenceMode?: string | null
+  imageUrl?: string | null
+  firstFrameUrl?: string | null
+  lastFrameUrl?: string | null
+  referenceImageUrls?: string[] | string | null
+}) {
+  if (String(record.referenceMode || '').trim().toLowerCase() !== 'multiple') {
+    throw new Error('AutoDL MiniMax H3 requires multi-reference R2V mode')
+  }
+  if (String(record.imageUrl || '').trim() || String(record.firstFrameUrl || '').trim() || String(record.lastFrameUrl || '').trim()) {
+    throw new Error('AutoDL MiniMax H3 R2V forbids image_url/first_frame_url/last_frame_url')
+  }
+  let refs: unknown[] = []
+  const rawReferences: any = record.referenceImageUrls
+  if (Array.isArray(rawReferences)) refs = rawReferences
+  else if (typeof rawReferences === 'string' && rawReferences.trim()) {
+    try {
+      const parsed = JSON.parse(rawReferences)
+      refs = Array.isArray(parsed) ? parsed : []
+    } catch {
+      throw new Error('AutoDL MiniMax H3 R2V reference list is invalid JSON')
+    }
+  }
+  if (refs.some(item => !String(item || '').trim())) {
+    throw new Error('AutoDL MiniMax H3 R2V reference list contains an empty image')
+  }
+  return true
+}
+
+/** Public guard used by API callers and tests to ensure local H3 requests
+ * never carry a retired frame-slot mode. */
+export function normalizeLocalComfyUiReferenceMode(value?: string | null) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized !== 'multiple') {
+    throw new Error('本地 MiniMax H3 仅支持多参考 R2V 模式')
+  }
+  return 'multiple'
+}
+
+export function assertLocalComfyUiContinuityMode(value?: string | null) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized && !['standard_r2v', 'latent_plus'].includes(normalized)) {
+    throw new Error('本地 MiniMax H3 仅支持标准 R2V 或 Motion Context Plus')
+  }
+  return true
+}
+
+/**
+ * Local ComfyUI jobs run on the user's GPU and can legitimately take longer
+ * than the remote-provider safety window.  A local job is therefore bounded
+ * by its provider result (completed/failed/cancelled), while remote jobs keep
+ * the existing finite retry budget.
+ */
+export function getVideoPollMaxAttempts(provider: string) {
+  return String(provider || '').trim().toLowerCase() === 'comfyui'
+    ? Number.POSITIVE_INFINITY
+    : String(provider || '').trim().toLowerCase() === 'autodl_comfyui'
+      ? AUTODL_VIDEO_POLL_MAX_ATTEMPTS
+    : VIDEO_POLL_MAX_ATTEMPTS
+}
+
+export function getVideoPollConnectivityFailureLimit(provider: string) {
+  return String(provider || '').trim().toLowerCase() === 'comfyui'
+    ? COMFYUI_MAX_CONSECUTIVE_TRANSPORT_FAILURES
+    : 0
+}
+
+/** AutoDL is remote; keep its polling bounded like other hosted providers. */
+export function isAutoDlComfyUiProvider(provider: string) {
+  return String(provider || '').trim().toLowerCase() === 'autodl_comfyui'
+}
+
+/**
+ * MiniMax H3 running through a local ComfyUI instance is not safe to submit
+ * concurrently. Keep this invariant in the service layer so API callers
+ * cannot bypass the serial-generation UI.
+ */
+export function assertVideoGenerationMode(
+  config: Pick<AIConfig, 'provider'>,
+  sequenceRunId?: number | null,
+) {
+  const provider = String(config.provider || '').trim().toLowerCase()
+  if (provider === 'comfyui' && (!sequenceRunId || !Number.isFinite(Number(sequenceRunId)))) {
+    throw new Error('本地 MiniMax H3 只能通过一键串行生成，请勿直接提交单镜头或批量任务')
+  }
+}
+
+function assertLocalComfyUiSequenceRun(
+  config: Pick<AIConfig, 'provider'>,
+  sequenceRunId?: number | null,
+) {
+  assertVideoGenerationMode(config, sequenceRunId)
+  if (String(config.provider || '').trim().toLowerCase() !== 'comfyui') return
+  const runId = Number(sequenceRunId)
+  const [run] = db.select().from(schema.videoSequenceRuns).where(eq(schema.videoSequenceRuns.id, runId)).all()
+  if (!run || String(run.provider || '').trim().toLowerCase() !== 'comfyui'
+    || !['queued', 'running', 'paused'].includes(String(run.status || '').toLowerCase())) {
+    throw new Error('本地 MiniMax H3 只能通过正在运行的一键串行任务提交')
+  }
 }
 
 export async function generateVideo(params: GenerateVideoParams): Promise<number> {
@@ -53,11 +267,28 @@ export async function generateVideo(params: GenerateVideoParams): Promise<number
     ? getConfigById(params.configId)
     : getActiveConfig('video')
   if (!config) throw new Error('No active video AI config')
+  assertLocalComfyUiSequenceRun(config, params.sequenceRunId)
+    const normalizedProvider = String(config.provider || '').trim().toLowerCase()
+    const isLocalComfyUi = normalizedProvider === 'comfyui'
+    const isAutoDlComfyUi = normalizedProvider === 'autodl_comfyui'
+  const referenceMode = (isLocalComfyUi || isAutoDlComfyUi)
+    ? (isLocalComfyUi
+      ? normalizeLocalComfyUiReferenceMode(params.referenceMode)
+      : (String(params.referenceMode || '').trim().toLowerCase() === 'multiple' ? 'multiple' : (() => { throw new Error('AutoDL MiniMax H3 requires multi-reference R2V mode') })()))
+    : (params.referenceMode || 'none')
+  if (isLocalComfyUi) {
+    assertLocalComfyUiContinuityMode(params.continuityMode)
+    assertLocalComfyUiR2VRecord({ ...params, referenceMode: 'multiple' })
+  }
+  if (isAutoDlComfyUi) {
+    assertAutoDlComfyUiR2VRecord({ ...params, referenceMode: 'multiple' })
+  }
   const visualContext = resolveVideoProjectVisualContext(params.storyboardId, params.dramaId)
   const finalPrompt = appendStoryboardDialoguePrompt(
     applyVideoVisualStyleLock(params.prompt, visualContext.style, visualContext.breakdownMode),
     params.storyboardId,
     visualContext.breakdownMode,
+    isLocalComfyUi,
   )
 
   const res = db.insert(schema.videoGenerations).values({
@@ -66,14 +297,27 @@ export async function generateVideo(params: GenerateVideoParams): Promise<number
     prompt: finalPrompt,
     model: params.model || config.model,
     provider: config.provider,
-    referenceMode: params.referenceMode || 'none',
+    referenceMode,
     promptIsFinal: params.promptIsFinal === true,
     imageUrl: params.imageUrl,
     firstFrameUrl: params.firstFrameUrl,
     lastFrameUrl: params.lastFrameUrl,
     referenceImageUrls: params.referenceImageUrls ? JSON.stringify(params.referenceImageUrls) : null,
+    referenceAudioUrls: params.referenceAudioUrls ? JSON.stringify(params.referenceAudioUrls) : null,
+    seed: normalizeSeed(params.seed),
     duration: params.duration || 5,
     aspectRatio: params.aspectRatio || '16:9',
+    megapixels: params.megapixels || 1,
+    steps: params.steps || undefined,
+    loraStrength: normalizeLoraStrength(params.loraStrength),
+    sequenceRunId: params.sequenceRunId ?? null,
+    sequenceStepIndex: params.sequenceStepIndex ?? null,
+    continuityMode: params.continuityMode || null,
+    latentPath: params.latentPath || null,
+    latentClipIndex: params.latentClipIndex ?? null,
+    referenceVideoLocalPath: String(config.provider || '').trim().toLowerCase() === 'comfyui'
+      ? params.referenceVideoLocalPath || null
+      : null,
     status: 'processing',
     createdAt: ts,
     updatedAt: ts,
@@ -82,9 +326,23 @@ export async function generateVideo(params: GenerateVideoParams): Promise<number
   const lastId = Number(res.lastInsertRowid)
   if (params.storyboardId) {
     db.update(schema.storyboards)
-      .set({ videoUrl: null, composedVideoUrl: null, status: 'pending', updatedAt: ts })
+      // `updatedAt` is the storyboard-content revision.  Video lifecycle
+      // changes must not advance it, otherwise a completed generation would
+      // look like a newer decomposition and invalidate the whole serial run.
+      .set({ videoUrl: null, composedVideoUrl: null, composedVideoGenerationId: null, status: 'pending' })
       .where(eq(schema.storyboards.id, params.storyboardId))
       .run()
+    // Any new shot generation invalidates the episode-level merged file. Keep
+    // the old file in history, but never expose it as the current episode
+    // output while the shot is being regenerated/recomposed.
+    const [storyboard] = db.select({ episodeId: schema.storyboards.episodeId })
+      .from(schema.storyboards)
+      .where(eq(schema.storyboards.id, params.storyboardId)).all()
+    if (storyboard?.episodeId) {
+      db.update(schema.episodes)
+        .set({ videoUrl: null, updatedAt: ts })
+        .where(eq(schema.episodes.id, storyboard.episodeId)).run()
+    }
   }
   logTaskStart('VideoTask', 'enqueue', {
     id: lastId,
@@ -117,6 +375,11 @@ async function processVideoGeneration(id: number, config: AIConfig) {
     const rows = db.select().from(schema.videoGenerations).where(eq(schema.videoGenerations.id, id)).all()
     const record = rows[0]
     if (!record) return
+    if (sequenceRunIsTerminal(record.sequenceRunId)) {
+      cancelVideoGenerationForSequence(id)
+      logTaskProgress('VideoTask', 'parent-terminal-before-submit', { id, sequenceRunId: record.sequenceRunId })
+      return
+    }
     const visualContext = resolveVideoProjectVisualContext(record.storyboardId, record.dramaId)
     const requestRecord = {
       ...record,
@@ -128,6 +391,7 @@ async function processVideoGeneration(id: number, config: AIConfig) {
         ),
         record.storyboardId,
         visualContext.breakdownMode,
+        String(config.provider || '').trim().toLowerCase() === 'comfyui',
       ),
     }
     logTaskProgress('VideoTask', 'build-request', {
@@ -137,7 +401,27 @@ async function processVideoGeneration(id: number, config: AIConfig) {
       referenceMode: record.referenceMode,
     })
 
-    const preparedRecord = config.provider === 'volcengine'
+    let comfyH3SageAttentionNode: ComfyUiSageAttentionNode | null = null
+    if (String(config.provider || '').trim().toLowerCase() === 'comfyui') {
+      logTaskProgress('VideoTask', 'comfyui-preflight', { id, baseUrl: config.baseUrl })
+      // Local MiniMax H3 has one provider contract only: ordered multi-
+      // reference R2V.  The serial continuity variant is selected solely by
+      // continuityMode (standard R2V vs Motion Context Plus); first/last-frame
+      // and ordinary I2V are never valid preflight branches.
+      const preflightMode = record.continuityMode === 'latent_plus' ? 'r2v_plus' : 'r2v'
+      const preflight = await ensureComfyUiGenerationReady(config, { mode: preflightMode, modelOverride: record.model })
+      comfyH3SageAttentionNode = preflight.sageAttentionNode || null
+      logTaskProgress('VideoTask', 'comfyui-ready', {
+        id,
+        baseUrl: config.baseUrl,
+        sageAttentionNode: comfyH3SageAttentionNode,
+      })
+    }
+    if (String(config.provider || '').trim().toLowerCase() === 'comfyui') assertLocalComfyUiR2VRecord(requestRecord)
+
+    const preparedRecord = config.provider === 'comfyui'
+      ? await prepareComfyUiVideoReferenceRecord(requestRecord, config)
+      : config.provider === 'volcengine'
       ? await prepareVolcengineSeedanceRecord(requestRecord)
       : config.provider === 'eggfans'
         ? await preparePublicVideoReferenceRecord(requestRecord)
@@ -145,6 +429,8 @@ async function processVideoGeneration(id: number, config: AIConfig) {
           ? await prepareMijingVideoReferenceRecord(requestRecord)
           : config.provider === 'grok_openai'
             ? await prepareGrokOpenAIVideoReferenceRecord(requestRecord)
+            : config.provider === 'autodl_comfyui'
+              ? await prepareAutoDlComfyUiVideoReferenceRecord(requestRecord, config)
         : {
           imageUrl: await normalizeVideoReferenceUrl(record.imageUrl),
           firstFrameUrl: await normalizeVideoReferenceUrl(record.firstFrameUrl),
@@ -157,7 +443,10 @@ async function processVideoGeneration(id: number, config: AIConfig) {
     persistPreparedVideoRequest(id, preparedRecord, record.promptIsFinal)
 
     // 使用 Adapter 构建请求
-    const { url, method, headers, body } = adapter.buildGenerateRequest(config, {
+    const autodlReferenceImages = 'autodlReferenceImages' in preparedRecord
+      ? preparedRecord.autodlReferenceImages
+      : null
+    const adapterRecord: VideoGenerationRecord = {
       id: record.id,
       model: record.model,
       prompt: preparedRecord.prompt,
@@ -166,9 +455,36 @@ async function processVideoGeneration(id: number, config: AIConfig) {
       firstFrameUrl: preparedRecord.firstFrameUrl,
       lastFrameUrl: preparedRecord.lastFrameUrl,
       referenceImageUrls: preparedRecord.referenceImageUrls ? JSON.stringify(preparedRecord.referenceImageUrls) : null,
+      referenceAudioUrls: record.referenceAudioUrls,
+      seed: record.seed,
+      comfyImageNames: (preparedRecord as any).comfyImageNames,
+      comfyVideoName: (preparedRecord as any).comfyVideoName,
       duration: record.duration,
       aspectRatio: record.aspectRatio,
-    })
+      megapixels: record.megapixels,
+      steps: record.steps,
+      loraStrength: record.loraStrength,
+      sequenceRunId: record.sequenceRunId,
+      sequenceStepIndex: record.sequenceStepIndex,
+      continuityMode: record.continuityMode,
+      latentPath: record.latentPath,
+      latentClipIndex: record.latentClipIndex,
+      comfyH3SageAttentionNode,
+    }
+    if (String(config.provider || '').trim().toLowerCase() === 'autodl_comfyui') {
+      adapterRecord.autodlReferenceImages = autodlReferenceImages
+    }
+    if (config.provider === 'comfyui') {
+      const refinement = await inspectLocalH3Refinement(config)
+      adapterRecord.comfyH3RefinementAvailable = refinement.available
+      if (refinement.reason) logTaskWarn('VideoTask', 'h3-refinement-skipped', { id, reason: refinement.reason })
+      if (adapterRecord.comfyVideoName && record.continuityMode !== 'latent_plus') {
+        const tail = await inspectLocalH3VideoTail(config)
+        adapterRecord.comfyH3VideoTailAvailable = tail.available
+        if (tail.reason) logTaskWarn('VideoTask', 'h3-video-tail-unavailable', { id, reason: tail.reason })
+      }
+    }
+    let { url, method, headers, body } = adapter.buildGenerateRequest(config, adapterRecord)
     logTaskProgress('VideoTask', 'request', {
       id,
       provider: config.provider,
@@ -185,28 +501,131 @@ async function processVideoGeneration(id: number, config: AIConfig) {
       body,
     })
 
-    const resp = await fetch(url, buildVideoFetchInit(method, headers, body, VIDEO_REQUEST_TIMEOUT_MS))
+    const provider = String(config.provider || '').trim().toLowerCase()
+    let autodlInlineRetryUsed = false
+    let requestRecordForParse: VideoGenerationRecord = adapterRecord
+    let resp: Response
+    if (provider === 'comfyui') {
+      const memory = await releaseComfyUiMemory(config)
+      logTaskProgress('VideoTask', 'comfyui-memory-ready', {
+        id,
+        storyboardId: record.storyboardId,
+        vramFreeBytes: memory.free,
+        vramTotalBytes: memory.total,
+        vramRequiredFreeBytes: memory.requiredFree,
+        releasePolls: memory.polls,
+      })
+    }
+    try {
+      try {
+        resp = await fetch(url, buildVideoFetchInit(method, headers, body, VIDEO_REQUEST_TIMEOUT_MS))
+      } catch (retryError: any) {
+        throw new Error(`本地 MiniMax H3 Worker 自动修复后仍无法提交任务：${String(retryError?.message || retryError)}`)
+      }
+    } catch (error) {
+      if (String(config.provider || '').trim().toLowerCase() !== 'comfyui') throw error
+      logTaskWarn('VideoTask', 'comfyui-request-repair', { id, error: String((error as any)?.message || error) })
+      const preflightMode = record.continuityMode === 'latent_plus' ? 'r2v_plus' : 'r2v'
+      await ensureComfyUiGenerationReady(config, { forceRepair: true, skipCache: true, mode: preflightMode, modelOverride: record.model })
+      resp = await fetch(url, buildVideoFetchInit(method, headers, body, VIDEO_REQUEST_TIMEOUT_MS))
+    }
 
-    if (!resp.ok) throw new Error(`API error ${resp.status}: ${await resp.text()}`)
-    const result = await resp.json() as any
+    if (!resp.ok) {
+      const errorBody = await resp.text()
+      if (provider === 'autodl_comfyui' && !autodlInlineRetryUsed && isAutoDlMiniMaxH3ReferenceUrlError(url, body, resp.status, errorBody)) {
+        const inlineReferences = await buildAutoDlInlineReferenceUrls(autodlReferenceImages)
+        autodlInlineRetryUsed = true
+        if (inlineReferences.length) {
+          logTaskWarn('VideoTask', 'autodl-reference-inline-retry', {
+            id,
+            status: resp.status,
+            referenceCount: inlineReferences.length,
+          })
+          requestRecordForParse = {
+            ...adapterRecord,
+            referenceImageUrls: JSON.stringify(inlineReferences),
+            autodlReferenceImages: null,
+          }
+          const retryRequest = adapter.buildGenerateRequest(config, requestRecordForParse)
+          url = retryRequest.url
+          method = retryRequest.method
+          headers = retryRequest.headers
+          body = retryRequest.body
+          logTaskPayload('VideoTask', 'autodl-reference-inline-retry payload', {
+            id,
+            method,
+            url,
+            headers,
+            body,
+          })
+          resp = await fetch(url, buildVideoFetchInit(method, headers, body, VIDEO_REQUEST_TIMEOUT_MS))
+          if (!resp.ok) {
+            const retryErrorBody = await resp.text()
+            throw new Error(`API error ${resp.status}: ${retryErrorBody}`)
+          }
+        } else {
+          throw new Error(`API error ${resp.status}: ${errorBody}`)
+        }
+      } else {
+        throw new Error(`API error ${resp.status}: ${errorBody}`)
+      }
+    }
+    let result = await resp.json() as any
+    try {
+      adapter.parseGenerateResponse(result, config, requestRecordForParse)
+    } catch (parseError) {
+      const responseBody = JSON.stringify(result)
+      if (provider !== 'autodl_comfyui' || autodlInlineRetryUsed
+        || !isAutoDlMiniMaxH3ReferenceUrlError(url, body, resp.status, responseBody, result)) {
+        throw parseError
+      }
+      const inlineReferences = await buildAutoDlInlineReferenceUrls(autodlReferenceImages)
+      autodlInlineRetryUsed = true
+      if (!inlineReferences.length) throw parseError
+      requestRecordForParse = {
+        ...adapterRecord,
+        referenceImageUrls: JSON.stringify(inlineReferences),
+        autodlReferenceImages: null,
+      }
+      const retryRequest = adapter.buildGenerateRequest(config, requestRecordForParse)
+      url = retryRequest.url
+      method = retryRequest.method
+      headers = retryRequest.headers
+      body = retryRequest.body
+      logTaskWarn('VideoTask', 'autodl-reference-inline-retry', {
+        id,
+        status: resp.status,
+        referenceCount: inlineReferences.length,
+      })
+      logTaskPayload('VideoTask', 'autodl-reference-inline-retry payload', {
+        id,
+        method,
+        url,
+        headers,
+        body,
+      })
+      resp = await fetch(url, buildVideoFetchInit(method, headers, body, VIDEO_REQUEST_TIMEOUT_MS))
+      const retryBody = await resp.text()
+      if (!resp.ok) throw new Error(`API error ${resp.status}: ${retryBody}`)
+      try {
+        result = JSON.parse(retryBody)
+      } catch {
+        throw new Error(`API returned invalid JSON: ${retryBody.slice(0, 500)}`)
+      }
+      adapter.parseGenerateResponse(result, config, requestRecordForParse)
+    }
 
-    const { isAsync, taskId, videoUrl } = adapter.parseGenerateResponse(result, config, {
-      id: record.id,
-      model: record.model,
-      prompt: preparedRecord.prompt,
-      referenceMode: preparedRecord.referenceMode || record.referenceMode,
-      imageUrl: preparedRecord.imageUrl,
-      firstFrameUrl: preparedRecord.firstFrameUrl,
-      lastFrameUrl: preparedRecord.lastFrameUrl,
-      referenceImageUrls: preparedRecord.referenceImageUrls ? JSON.stringify(preparedRecord.referenceImageUrls) : null,
-      duration: record.duration,
-      aspectRatio: record.aspectRatio,
-    })
+    const { isAsync, taskId, videoUrl } = adapter.parseGenerateResponse(result, config, requestRecordForParse)
 
     if (!isAsync && videoUrl) {
+      if (sequenceRunIsTerminal(record.sequenceRunId)) {
+        cancelVideoGenerationForSequence(id)
+        logTaskProgress('VideoTask', 'sync-complete-parent-terminal', { id, sequenceRunId: record.sequenceRunId })
+        return
+      }
       logTaskProgress('VideoTask', 'sync-complete', { id, videoUrl })
       // 同步模式
-      await handleVideoComplete(id, videoUrl, record.duration, record.storyboardId)
+      await handleVideoComplete(id, videoUrl, record.duration, record.storyboardId, config)
       return
     }
 
@@ -215,6 +634,11 @@ async function processVideoGeneration(id: number, config: AIConfig) {
       .set({ taskId, status: 'processing', updatedAt: now() })
       .where(eq(schema.videoGenerations.id, id))
       .run()
+    if (sequenceRunIsTerminal(record.sequenceRunId)) {
+      cancelVideoGenerationForSequence(id)
+      logTaskProgress('VideoTask', 'parent-terminal-after-submit', { id, sequenceRunId: record.sequenceRunId, taskId })
+      return
+    }
     logTaskProgress('VideoTask', 'poll-start', { id, taskId, provider: config.provider })
 
     // Vidu 没有轮询端点，跳过轮询（依赖 Webhook 回调）
@@ -226,14 +650,21 @@ async function processVideoGeneration(id: number, config: AIConfig) {
     startVideoPoller(id, config, taskId!, record.storyboardId)
   } catch (err: any) {
     logTaskError('VideoTask', 'process', { id, provider: config.provider, error: err.message })
-    db.update(schema.videoGenerations)
-      .set({ status: 'failed', errorMsg: err.message, updatedAt: now() })
-      .where(eq(schema.videoGenerations.id, id))
-      .run()
+    const [current] = db.select().from(schema.videoGenerations).where(eq(schema.videoGenerations.id, id)).all()
+    if (sequenceRunIsTerminal(current?.sequenceRunId)) {
+      cancelVideoGenerationForSequence(id)
+    } else {
+      db.update(schema.videoGenerations)
+        .set({ status: 'failed', errorMsg: err.message, updatedAt: now() })
+        .where(eq(schema.videoGenerations.id, id))
+        .run()
+    }
   }
 }
 
 async function prepareMijingVideoReferenceRecord(record: VideoPromptRecord): Promise<PreparedVideoReferenceRecord> {
+  return prepareMijingVideoReferences(record)
+  /* istanbul ignore next: legacy branch retained below for source compatibility
   if (record.referenceMode !== 'first_frame_multiple') {
     return {
       imageUrl: await normalizeMijingReference(record.imageUrl, `镜头${record.storyboardId || record.id}-参考图`),
@@ -250,7 +681,7 @@ async function prepareMijingVideoReferenceRecord(record: VideoPromptRecord): Pro
   const references: string[] = []
   for (const [index, url] of parsed.entries()) {
     const reference = await normalizeMijingReference(url, `镜头${record.storyboardId || record.id}-参考资产${index + 1}`)
-    if (reference && reference !== firstFrameUrl && !references.includes(reference)) references.push(reference)
+    if (reference && reference !== firstFrameUrl && !references.includes(reference as string)) references.push(reference as string)
   }
   return {
     imageUrl: null,
@@ -260,6 +691,410 @@ async function prepareMijingVideoReferenceRecord(record: VideoPromptRecord): Pro
     prompt: String(record.prompt || ''),
     referenceMode: 'first_frame_multiple',
   }
+  */
+}
+
+/** Prepare references for the hosted AutoDL workflow API. AutoDL cannot read
+ * this application's `static/` paths, so local/data images are converted to
+ * short-lived public URLs before submission. The resulting list is kept in
+ * one provider-neutral field; no local ComfyUI upload, LoRA or latent state is
+ * involved.
+ */
+async function prepareAutoDlComfyUiVideoReferenceRecord(record: VideoPromptRecord, config: AIConfig): Promise<PreparedVideoReferenceRecord> {
+  const settings = config.settings?.autodlComfyui || {}
+  const rawRefs: string[] = []
+  const push = (value: unknown) => {
+    const raw = String(value || '').trim()
+    if (!raw || rawRefs.includes(raw)) return
+    rawRefs.push(raw)
+  }
+  // A configured AutoDL R2V workflow receives the preceding continuity image
+  // in the same ordered reference list. It is not sent as a first/last-frame
+  // provider field, so the workflow remains independent from legacy I2V paths.
+  if (record.referenceMode === 'first_frame_multiple' || record.referenceMode === 'first_last') {
+    throw new Error('AutoDL ComfyUI 仅支持多参考图工作流；请在分镜串行模式中使用 referenceMode=multiple')
+  }
+  // AutoDL receives references only through the configured workflow field.
+  // Do not promote generic image/first-frame columns into that list: those
+  // fields belong to legacy I2V providers and would let a stale caller replace
+  // the ordered R2V Picture 1 continuity image.
+  parseReferenceImageUrls(record.referenceImageUrls).forEach(push)
+
+  const referenceUrls: string[] = []
+  const autodlReferenceImages: NonNullable<PreparedVideoReferenceRecord['autodlReferenceImages']> = []
+  for (const [index, raw] of rawRefs.entries()) {
+    if (isVolcAssetUri(raw)) {
+      throw new Error(`AutoDL ComfyUI 不支持火山 Asset URI：参考图${index + 1}，请使用本地图片或公网 URL`)
+    }
+    // AutoDL receives a public URL after the upload step.  Keep local static
+    // assets at their original resolution here; normalizeVideoReferenceUrl()
+    // is intentionally a compressed preview path for providers that accept
+    // inline images, while AutoDL's uploader can read the local 4K source
+    // directly before publishing it.
+    const normalized = normalizeAutoDlReferenceUrl(raw)
+    if (!normalized) continue
+    const hosted = await ensurePublicImageUrl(normalized, `AutoDL-参考图${index + 1}`)
+    if (hosted?.url && !referenceUrls.includes(hosted.url)) {
+      referenceUrls.push(hosted.url)
+      autodlReferenceImages.push({ url: hosted.url, source: raw })
+    }
+  }
+
+  const maxReferences = Number(settings.maxReferenceImages || settings.max_reference_images)
+  const limited = referenceUrls.slice(0, Number.isFinite(maxReferences) ? Math.max(1, Math.min(9, Math.round(maxReferences))) : 9)
+  const prompt = limited.length
+    ? [
+      String(record.prompt || '').trim(),
+      `AutoDL ComfyUI 有序参考图（共 ${limited.length} 张）：${limited.map((_, index) => `<Picture ${index + 1}>`).join('、')}。请严格按顺序将每张图片用于对应的连续构图、角色、场景或道具，不得交换、合并或忽略。`,
+    ].filter(Boolean).join('\n')
+    : String(record.prompt || '')
+  return {
+    prompt,
+    imageUrl: null,
+    firstFrameUrl: null,
+    lastFrameUrl: null,
+    referenceImageUrls: limited,
+    referenceMode: limited.length ? 'multiple' : 'none',
+    autodlReferenceImages: autodlReferenceImages.slice(0, limited.length),
+  }
+}
+
+function normalizeAutoDlReferenceUrl(value: string): string | null {
+  const raw = String(value || '').trim()
+  if (!raw) return null
+  if (raw.startsWith('data:image/')) return raw
+  if (raw.startsWith('static/') || raw.startsWith('/static/')) return raw
+  return raw
+}
+
+export function isAutoDlMiniMaxH3ReferenceUrlError(
+  url: string,
+  body: unknown,
+  status: number,
+  errorBody: string,
+  parsedResponse?: unknown,
+): boolean {
+  const requestUrl = String(url || '')
+  const serializedBody = safeJsonStringify(body)
+  if (!/minimax_h3_image_audio_to_video_v2_15s/i.test(requestUrl)
+    && !/minimax_h3_image_audio_to_video_v2_15s/i.test(serializedBody)) return false
+
+  const bodyObject = typeof body === 'string' ? parseJsonObject(body) : body
+  const hasReferenceInput = bodyObject && typeof bodyObject === 'object'
+    ? Object.keys(bodyObject as Record<string, unknown>).some(key => /^ref_image_\d+$/i.test(key))
+    : /ref_image_\d+/i.test(String(body || ''))
+  if (!hasReferenceInput) return false
+
+  const serializedResponse = safeJsonStringify(parsedResponse)
+  const errorText = `${String(errorBody || '')} ${serializedResponse} status=${Number(status)}`.toLowerCase()
+  const mentionsReferenceImage = /ref[_ -]?image[_ -]?\d+|reference\s*image|参考图|图片/.test(errorText)
+  const mentionsUrl = /\burl\b|地址|链接|uri/.test(errorText)
+  const mentionsInvalidReference = /403|forbidden|invalid|illegal|not\s+found|unreachable|不存在|不合法|不可访问/.test(errorText)
+  return mentionsReferenceImage && mentionsUrl && mentionsInvalidReference
+}
+
+export async function buildAutoDlInlineReferenceUrls(
+  references?: Array<{ url: string; source?: string | null }> | null,
+): Promise<string[]> {
+  const result: string[] = []
+  for (const [index, reference] of (references || []).entries()) {
+    const source = String(reference?.source || reference?.url || '').trim()
+    if (!source) throw new Error(`AutoDL 参考图 ${index + 1} 缺少图片来源`)
+    result.push(await readAutoDlInlineReference(source, index + 1))
+  }
+  return result
+}
+
+async function readAutoDlInlineReference(source: string, index: number): Promise<string> {
+  if (/^data:image\//i.test(source)) return source
+
+  const staticPath = getStaticRelativePath(source)
+  if (staticPath) {
+    return readImageAsCompressedDataUrl(staticPath, {
+      maxWidth: 1024,
+      maxHeight: 1024,
+      quality: 76,
+    })
+  }
+
+  if (fs.existsSync(source)) {
+    const buffer = fs.readFileSync(source)
+    return `data:${autoDlInlineMimeType(source)};base64,${buffer.toString('base64')}`
+  }
+
+  if (/^https?:\/\//i.test(source)) {
+    const response = await fetch(source, { signal: AbortSignal.timeout(65_000) })
+    if (!response.ok) throw new Error(`AutoDL 参考图 ${index} 下载失败：HTTP ${response.status}`)
+    const buffer = Buffer.from(await response.arrayBuffer())
+    const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase()
+    const mimeType = contentType.startsWith('image/') ? contentType : autoDlInlineMimeType(source)
+    return `data:${mimeType};base64,${buffer.toString('base64')}`
+  }
+
+  throw new Error(`AutoDL 参考图 ${index} 无法读取：${source.slice(0, 160)}`)
+}
+
+function parseJsonObject(value: string): unknown {
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function safeJsonStringify(value: unknown): string {
+  if (value === undefined) return ''
+  try { return JSON.stringify(value) } catch { return String(value) }
+}
+
+function autoDlInlineMimeType(value: string): string {
+  const extension = String(value).split(/[?#]/)[0].toLowerCase().match(/\.(png|webp|gif|jpg|jpeg)$/)?.[1]
+  return extension === 'png' ? 'image/png'
+    : extension === 'webp' ? 'image/webp'
+      : extension === 'gif' ? 'image/gif'
+        : 'image/jpeg'
+}
+
+/** Upload local/data/remote references into ComfyUI's input directory. */
+async function prepareComfyUiVideoReferenceRecord(record: VideoPromptRecord, config: AIConfig): Promise<PreparedVideoReferenceRecord> {
+  const uploadedNames: NonNullable<PreparedVideoReferenceRecord['comfyImageNames']> = { referenceImages: [] }
+  // MiniMax H3 R2V has no first-frame/last-frame request fields.  The previous
+  // tail must already be Picture 1 in the ordered reference-image list.  Do
+  // not consume legacy firstFrameUrl/lastFrameUrl values here: accepting them
+  // would silently re-introduce the retired FL2VA/I2V semantics and is exactly
+  // how a serial hand-off can end up on the wrong frame.
+  assertLocalComfyUiR2VRecord(record)
+  const parsedReferenceUrls = dedupeComfyUiReferenceUrls(parseReferenceImageUrls(record.referenceImageUrls))
+  const mode = String(record.referenceMode || 'none').toLowerCase()
+  // Every local ComfyUI generation is submitted by the serial R2V pipeline.
+  // Keep this guard here as a second line of defence for stale/manual rows.
+  // Local MiniMax H3 is strictly the R2V multi-reference pipeline.  A
+  // first_frame_multiple record belongs to the retired FL2VA/I2V path and
+  // must never be silently accepted or translated here.
+  if (mode !== 'multiple') {
+    throw new Error('本地 MiniMax H3 仅支持多参考 R2V，禁止首帧/尾帧/I2V/FL2VA 模式')
+  }
+  // Model/node availability is checked by ensureComfyUiGenerationReady with
+  // the currently selected UNET (`record.model`). Do not repeat a hard-coded
+  // ref2va basename check here: the Studio supports all selectable H3 R2V
+  // checkpoints, including the hybrid FL2VA/Ref2VA model.
+  const upload = async (value: string | null | undefined, label: string, slotIndex: number) => {
+    const raw = String(value || '').trim()
+    if (!raw) return null
+    if (/^(?:@)?asset:\/\//i.test(raw)) throw new Error(`ComfyUI 不支持火山 Asset URI：${label}，请使用项目图片或本地素材`)
+    const source = parseDataUrl(raw)
+    let buffer: Buffer
+    let mimeType = 'image/jpeg'
+    let fileName = `${label}.jpg`
+    if (source) {
+      buffer = Buffer.from(source.data, 'base64')
+      mimeType = source.mimeType || mimeType
+    } else {
+      const staticPath = getStaticRelativePath(raw)
+      if (staticPath) {
+        const local = readLocalFile(staticPath)
+        buffer = local.buffer
+        mimeType = local.mimeType
+        // Do not reuse the source basename. ComfyUI caches LoadImage nodes by
+        // filename; reusing a character's old basename can therefore make a
+        // freshly decomposed shot receive a previous character image even
+        // though the upload succeeded. The final upload name is made unique
+        // below for every generation and every reference slot.
+      } else if (/^https?:\/\//i.test(raw)) {
+        const response = await fetch(raw, { signal: AbortSignal.timeout(65_000) })
+        if (!response.ok) throw new Error(`${label}下载失败：HTTP ${response.status}`)
+        buffer = Buffer.from(await response.arrayBuffer())
+        mimeType = response.headers.get('content-type')?.split(';')[0] || mimeType
+      } else {
+        throw new Error(`${label}不是可读取的图片地址：${raw.slice(0, 120)}`)
+      }
+    }
+    const ext = mimeType.includes('png') ? '.png' : mimeType.includes('webp') ? '.webp' : '.jpg'
+    const uniqueName = `mijing-reference-${record.id}-${slotIndex + 1}-${Date.now()}-${Math.random().toString(16).slice(2)}${ext}`
+    const form = new FormData()
+    form.append('image', new Blob([new Uint8Array(buffer)], { type: mimeType }), uniqueName)
+    // Unique names are intentional. Overwrite=true with a stable filename
+    // allows ComfyUI's prompt cache to reuse the old LoadImage result.
+    form.append('overwrite', 'false')
+    const base = String(config.baseUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '')
+    const response = await fetch(`${base}/upload/image`, { method: 'POST', body: form, signal: AbortSignal.timeout(65_000) })
+    const text = await response.text()
+    if (!response.ok) throw new Error(`ComfyUI 上传${label}失败：HTTP ${response.status} ${text.slice(0, 300)}`)
+    let parsed: any = {}
+    try { parsed = JSON.parse(text) } catch { /* handled by fallback below */ }
+    const name = String(parsed.name || parsed.image || parsed.filename || uniqueName).trim()
+    if (!name) throw new Error(`ComfyUI 上传${label}未返回文件名`)
+    return name
+  }
+
+  for (const [index, value] of parsedReferenceUrls.entries()) {
+    const name = await upload(value, `mijing-reference-${index + 1}`, index)
+    if (name && !uploadedNames.referenceImages!.includes(name)) uploadedNames.referenceImages!.push(name)
+  }
+  const comfyVideoName = record.referenceVideoLocalPath
+    ? await uploadComfyUiVideo(record.referenceVideoLocalPath, config, record.id,
+      record.continuityMode !== 'latent_plus' && Number(record.sequenceStepIndex) > 0)
+    : null
+  const prompt = comfyVideoName && record.continuityMode !== 'latent_plus' && Number(record.sequenceStepIndex) > 0
+    ? applyLocalH3VideoContinuation(String(record.prompt || ''))
+    : String(record.prompt || '')
+  const prepared: PreparedVideoReferenceRecord = {
+    // R2V is image-list only. Never persist or forward a legacy imageUrl as a
+    // hidden single-image input; doing so can make an old protagonist replace
+    // the explicitly ordered Picture bindings.
+    imageUrl: null,
+    firstFrameUrl: null,
+    lastFrameUrl: null,
+    referenceImageUrls: parsedReferenceUrls,
+    prompt,
+    referenceMode: 'multiple',
+    comfyImageNames: uploadedNames,
+    comfyVideoName,
+  }
+  // Re-check the normalized record as the final barrier before persistence.
+  // This catches a future upload/normalization branch that accidentally adds
+  // a legacy frame slot or strips the ordered image list.
+  assertLocalComfyUiR2VRecord(prepared)
+  return prepared
+}
+
+async function uploadComfyUiVideo(value: string, config: AIConfig, recordId: number, trimToContinuationTail = false): Promise<string> {
+  const raw = String(value || '').trim()
+  const staticPath = getStaticRelativePath(raw)
+  let buffer: Buffer
+  let extension = '.mp4'
+  let sourcePath: string | null = null
+  let temporarySourcePath: string | null = null
+  if (staticPath) {
+    const local = readLocalFile(staticPath)
+    buffer = local.buffer
+    extension = /\.(webm|mov|m4v|avi)$/i.test(local.filename) ? `.${local.filename.split('.').pop()}` : '.mp4'
+    sourcePath = getAbsolutePath(staticPath)
+  } else if (fs.existsSync(raw)) {
+    buffer = fs.readFileSync(raw)
+    extension = /\.(webm|mov|m4v|avi)$/i.test(raw) ? `.${raw.split('.').pop()}` : '.mp4'
+    sourcePath = raw
+  } else if (/^https?:\/\//i.test(raw)) {
+    const response = await fetch(raw, { signal: AbortSignal.timeout(VIDEO_DOWNLOAD_TIMEOUT_MS) })
+    if (!response.ok) throw new Error(`ComfyUI 上一镜视频下载失败：HTTP ${response.status}`)
+    buffer = Buffer.from(await response.arrayBuffer())
+    const match = new URL(raw).pathname.match(/\.(webm|mov|m4v|avi|mp4)$/i)
+    extension = match ? `.${match[1].toLowerCase()}` : '.mp4'
+  } else {
+    throw new Error(`ComfyUI 上一镜视频无法读取：${raw.slice(0, 160)}`)
+  }
+  if (trimToContinuationTail) {
+    const workDir = getAbsolutePath('static/sequence-videos')
+    fs.mkdirSync(workDir, { recursive: true })
+    const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    if (!sourcePath) {
+      temporarySourcePath = path.join(workDir, `source-${recordId}-${nonce}${extension}`)
+      fs.writeFileSync(temporarySourcePath, buffer)
+      sourcePath = temporarySourcePath
+    }
+    const tailPath = path.join(workDir, `continuation-${recordId}-${nonce}.mp4`)
+    try {
+      await execFileAsync(getFfmpegBinary(), [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-sseof', `-${LOCAL_H3_CONTINUATION_TAIL_SECONDS}`,
+        '-i', sourcePath,
+        '-t', String(LOCAL_H3_CONTINUATION_TAIL_SECONDS),
+        '-vf', 'fps=24',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac', '-movflags', '+faststart',
+        tailPath,
+      ], { timeout: VIDEO_DOWNLOAD_TIMEOUT_MS })
+      buffer = fs.readFileSync(tailPath)
+      extension = '.mp4'
+    } finally {
+      if (fs.existsSync(tailPath)) fs.rmSync(tailPath, { force: true })
+      if (temporarySourcePath && fs.existsSync(temporarySourcePath)) fs.rmSync(temporarySourcePath, { force: true })
+    }
+  }
+  const name = `mijing-previous-video-${recordId}-${Date.now()}-${Math.random().toString(16).slice(2)}${extension}`
+  const form = new FormData()
+  form.append('image', new Blob([new Uint8Array(buffer)], { type: 'video/mp4' }), name)
+  form.append('type', 'input')
+  form.append('overwrite', 'false')
+  const base = String(config.baseUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '')
+  const response = await fetch(`${base}/upload/image`, { method: 'POST', body: form, signal: AbortSignal.timeout(VIDEO_DOWNLOAD_TIMEOUT_MS) })
+  const text = await response.text()
+  if (!response.ok) throw new Error(`ComfyUI 上一镜视频上传失败：HTTP ${response.status} ${text.slice(0, 300)}`)
+  let parsed: any = {}
+  try { parsed = JSON.parse(text) } catch {}
+  const uploadedName = String(parsed.name || parsed.filename || name).trim()
+  if (!uploadedName) throw new Error('ComfyUI 上一镜视频上传未返回文件名')
+  return uploadedName
+}
+
+/** Return local references without duplicate image values.  MiniMax H3 R2V
+ * receives the complete ordered list through `referenceImages`; Picture 1 is
+ * the previous tail and there is no dedicated first-frame slot. */
+export function dedupeComfyUiReferenceUrls(values: string[], firstFrameUrl?: string | null) {
+  // The optional argument is retained for source compatibility with callers
+  // outside this module, but local R2V never treats it as a provider frame
+  // input.  Callers must pass the complete ordered list via `values`.
+  const first = comfyReferenceSourceKey(firstFrameUrl)
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values || []) {
+    const normalized = String(value || '').trim()
+    const key = comfyReferenceSourceKey(normalized)
+    if (!normalized || !key || key === first || seen.has(key)) continue
+    seen.add(key)
+    result.push(normalized)
+  }
+  return result
+}
+
+function comfyReferenceSourceKey(value?: string | null) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const local = raw
+    .replace(/^https?:\/\/[^/]+\/static\//i, 'static/')
+    .replace(/^\/static\//i, 'static/')
+    .replace(/\\/g, '/')
+  return local.startsWith('static/') ? `static:${local.slice(7)}` : local
+}
+
+export async function prepareMijingVideoReferences(
+  record: VideoPromptRecord,
+  syncAsset: (input: VolcAssetReferenceInput) => Promise<SyncedVolcAsset> = syncVolcImageAsset,
+): Promise<PreparedVideoReferenceRecord> {
+  const context = getVideoAssetContext(record)
+  const sync = async (value: string | null | undefined, name: string) => {
+    const raw = String(value || '').trim()
+    if (!raw) return null
+    if (isVolcAssetUri(raw)) return normalizeVolcAssetUri(raw)
+    const asset = await syncAsset({ url: raw, name, category: 'storyboard', dramaId: record.dramaId, episodeId: context.episodeId, storyboardId: record.storyboardId, storyboardNum: context.storyboardNum, groupName: context.groupName, source: 'volc:mijingVideoReference' })
+    return normalizeVolcAssetUri(asset.assetUri || asset.providerAssetId)
+  }
+  if (record.referenceMode === 'first_frame_multiple') {
+    const firstFrameUrl = await sync(record.firstFrameUrl, '首帧')
+    if (!firstFrameUrl) throw new Error('首帧缺少图片地址，已取消视频生成')
+    const references: string[] = []
+    for (const [index, url] of parseReferenceImageUrls(record.referenceImageUrls).entries()) {
+      const reference = await sync(url, `参考图${index + 1}`)
+      if (reference && reference !== firstFrameUrl && !references.includes(reference)) references.push(reference)
+    }
+    return { imageUrl: null, firstFrameUrl, lastFrameUrl: null, referenceImageUrls: references.slice(0, 8), prompt: String(record.prompt || ''), referenceMode: 'first_frame_multiple' }
+  }
+  if (record.referenceMode === 'first_last') {
+    const firstFrameUrl = await sync(record.firstFrameUrl, '首帧')
+    const lastFrameUrl = await sync(record.lastFrameUrl, '尾帧')
+    if (!firstFrameUrl || !lastFrameUrl) throw new Error('首尾帧缺少图片地址，已取消视频生成')
+    return { imageUrl: null, firstFrameUrl, lastFrameUrl, referenceImageUrls: [], prompt: String(record.prompt || ''), referenceMode: 'first_last' }
+  }
+  const imageUrl = await sync(record.imageUrl, '参考图')
+  const firstFrameUrl = await sync(record.firstFrameUrl, '首帧')
+  const lastFrameUrl = await sync(record.lastFrameUrl, '尾帧')
+  const referenceImageUrls: string[] = []
+  for (const [index, url] of parseReferenceImageUrls(record.referenceImageUrls).entries()) {
+    const reference = await sync(url, `参考图${index + 1}`)
+    if (reference && !referenceImageUrls.includes(reference)) referenceImageUrls.push(reference)
+  }
+  return { imageUrl, firstFrameUrl, lastFrameUrl, referenceImageUrls: referenceImageUrls.slice(0, 9), prompt: String(record.prompt || ''), referenceMode: record.referenceMode || 'none' }
 }
 
 async function normalizeMijingReferences(value: string | null | undefined, name: string) {
@@ -383,9 +1218,10 @@ export function buildVideoFetchInit(
 }
 
 export function ensureVideoPolling(
-  record: Pick<VideoGenerationRow, 'id' | 'storyboardId' | 'provider' | 'model' | 'status' | 'taskId' | 'createdAt' | 'updatedAt' | 'deletedAt'> | null | undefined,
+  record: Pick<VideoGenerationRow, 'id' | 'storyboardId' | 'provider' | 'model' | 'status' | 'taskId' | 'createdAt' | 'updatedAt' | 'deletedAt' | 'sequenceRunId'> | null | undefined,
   reason = 'api',
 ) {
+  if (!canResumeBackgroundTasks(reason)) return false
   if (isStaleUnrecoverableVideoGeneration(record)) {
     db.update(schema.videoGenerations)
       .set({
@@ -465,7 +1301,16 @@ function startVideoPoller(
         .where(eq(schema.videoGenerations.id, id))
         .run()
     })
-    .finally(() => {
+    .finally(async () => {
+      const [current] = db.select().from(schema.videoGenerations).where(eq(schema.videoGenerations.id, id)).all()
+      if (String(config.provider || '').trim().toLowerCase() === 'comfyui' && current?.status !== 'completed') {
+        try {
+          await releaseComfyUiMemory(config)
+          logTaskProgress('VideoTask', 'comfyui-memory-released', { id, taskId, reason: 'terminal-without-completion' })
+        } catch (err: any) {
+          logTaskWarn('VideoTask', 'comfyui-memory-release-failed', { id, taskId, error: err?.message || String(err) })
+        }
+      }
       activeVideoPollers.delete(id)
     })
 
@@ -535,7 +1380,7 @@ function parseConfigSettings(value?: string | null): Record<string, any> | null 
 type VideoPromptRecord = Pick<
   typeof schema.videoGenerations.$inferSelect,
   'id' | 'storyboardId' | 'dramaId' | 'prompt' | 'promptIsFinal' | 'model' | 'referenceMode' | 'imageUrl' | 'firstFrameUrl' | 'lastFrameUrl' | 'referenceImageUrls'
->
+> & { steps?: number | null; referenceAudioUrls?: string | null; seed?: number | null; referenceVideoLocalPath?: string | null; continuityMode?: string | null; sequenceStepIndex?: number | null }
 
 type PreparedVolcengineRecord = {
   prompt: string
@@ -556,11 +1401,20 @@ type PreparedVideoReferenceRecord = {
   lastFrameUrl: string | null
   referenceImageUrls: string[]
   referenceMode?: string
+  autodlReferenceImages?: Array<{
+    url: string
+    source?: string | null
+  }> | null
+  comfyImageNames?: {
+    referenceImages?: string[]
+  } | null
+  comfyVideoName?: string | null
 }
 
 type PublicVideoReferenceContext = {
   sceneImages: Array<{ name: string; url: string }>
   characterImages: Array<{ name: string; url: string; characterId?: number; asset?: SyncedVolcAsset }>
+  propImages?: Array<{ name: string; url: string }>
 }
 
 type EnsurePublicVideoReference = (
@@ -585,8 +1439,29 @@ export async function previewVideoPrompt(params: GenerateVideoParams) {
     : getActiveConfig('video')
   if (!config) throw new Error('No active video AI config')
 
+  const isLocalComfyUi = String(config.provider || '').trim().toLowerCase() === 'comfyui'
+  if (isLocalComfyUi) {
+    // Preview must obey exactly the same local H3 contract as generation.
+    // Never expose a first/last-frame or I2V preview from a stale caller.
+    const localReferenceMode = normalizeLocalComfyUiReferenceMode(params.referenceMode)
+    assertLocalComfyUiR2VRecord({
+      referenceMode: localReferenceMode,
+      // Validate the caller's actual fields.  The preview endpoint must not
+      // silently discard a legacy frame slot and make an invalid local request
+      // look like a valid multi-reference preview.
+      imageUrl: params.imageUrl,
+      firstFrameUrl: params.firstFrameUrl,
+      lastFrameUrl: params.lastFrameUrl,
+      referenceImageUrls: params.referenceImageUrls,
+      prompt: params.prompt,
+    })
+  }
+
   const model = params.model || config.model
-  const referenceMode = params.referenceMode || 'none'
+  // Local MiniMax H3 has one preview contract too: ordered multi-reference
+  // R2V. Do not echo a stale first_last/first_frame_multiple value back to the
+  // UI even when an older caller omitted or supplied the retired mode.
+  const referenceMode = isLocalComfyUi ? 'multiple' : (params.referenceMode || 'none')
   const visualContext = resolveVideoProjectVisualContext(params.storyboardId, params.dramaId)
   const prompt = appendStoryboardDialoguePrompt(
     applyVideoVisualStyleLock(
@@ -596,9 +1471,17 @@ export async function previewVideoPrompt(params: GenerateVideoParams) {
     ),
     params.storyboardId,
     visualContext.breakdownMode,
+    isLocalComfyUi,
   )
   if (config.provider !== 'volcengine') {
-    const prepared = config.provider === 'eggfans'
+    const prepared = config.provider === 'comfyui'
+      ? {
+        prompt,
+        referenceImageUrls: Array.isArray(params.referenceImageUrls)
+          ? params.referenceImageUrls
+          : parseReferenceImageUrls(params.referenceImageUrls),
+      }
+      : config.provider === 'eggfans'
       ? await preparePublicVideoReferenceRecord({
         id: 0,
         storyboardId: params.storyboardId || null,
@@ -626,6 +1509,20 @@ export async function previewVideoPrompt(params: GenerateVideoParams) {
           lastFrameUrl: params.lastFrameUrl || null,
           referenceImageUrls: params.referenceImageUrls ? JSON.stringify(params.referenceImageUrls) : null,
         })
+      : config.provider === 'autodl_comfyui'
+        ? await prepareAutoDlComfyUiVideoReferenceRecord({
+          id: 0,
+          storyboardId: params.storyboardId || null,
+          dramaId: params.dramaId || null,
+          prompt,
+          promptIsFinal: params.promptIsFinal === true,
+          model,
+          referenceMode,
+          imageUrl: params.imageUrl || null,
+          firstFrameUrl: params.firstFrameUrl || null,
+          lastFrameUrl: params.lastFrameUrl || null,
+          referenceImageUrls: params.referenceImageUrls ? JSON.stringify(params.referenceImageUrls) : null,
+        }, config)
       : {
         prompt,
         referenceImageUrls: params.referenceImageUrls || [],
@@ -1013,6 +1910,7 @@ function collectVideoReferencesFromContext(
     item.name,
     item.asset,
   ))
+  ;(context.propImages || []).forEach((item, index) => push(item.url, `道具-${item.name || index + 1}`, 'prop', 'prop', undefined, item.name))
   return refs.slice(0, maxReferences)
 }
 
@@ -1383,6 +2281,12 @@ export function collectVideoReferences(record: VideoPromptRecord) {
   } else if (record.referenceMode === 'first_last') {
     pushRequired(record.firstFrameUrl, `${storyboardLabel}-首帧`, 'first_frame', 'storyboard', '首尾帧模式缺少首帧参考图', 1)
     pushRequired(record.lastFrameUrl, `${storyboardLabel}-尾帧`, 'last_frame', 'storyboard', '首尾帧模式缺少尾帧参考图', 2)
+  } else if (record.referenceMode === 'first_frame_multiple') {
+    pushRequired(record.firstFrameUrl, `${storyboardLabel}-首帧`, 'first_frame', 'storyboard', '首帧多图模式缺少首帧参考图', 1)
+    let parsed: unknown
+    try { parsed = JSON.parse(record.referenceImageUrls || '[]') } catch { throw new Error('Seedance 2.0 首帧多图参考图解析失败') }
+    if (!Array.isArray(parsed) || !parsed.length) throw new Error('Seedance 2.0 首帧多图模式缺少参考图')
+    parsed.forEach((url, index) => pushRequired(url, `${storyboardLabel}-参考图${index + 1}`, 'reference_image', 'storyboard', `首帧多图模式第 ${index + 1} 张参考图为空`, index + 2))
   } else if (record.referenceMode === 'multiple' && record.referenceImageUrls) {
     let parsed: unknown
     try {
@@ -1417,6 +2321,7 @@ export function collectVideoReferences(record: VideoPromptRecord) {
     item.asset,
     item.characterId,
   ))
+  ;(context.propImages || []).forEach((item, index) => push(item.url, `道具-${item.name || index + 1}`, 'prop', 'prop', undefined, item.name))
 
   return refs.slice(0, 9)
 
@@ -1447,33 +2352,211 @@ function getVideoAssetContext(record: VideoPromptRecord) {
     : episode?.dramaId
       ? db.select().from(schema.dramas).where(eq(schema.dramas.id, episode.dramaId)).all()
       : []
-  const [scene] = storyboard?.sceneId
-    ? db.select().from(schema.scenes).where(eq(schema.scenes.id, storyboard.sceneId)).all()
-    : []
+  // Re-decomposed shots may carry the location only in a structured field or
+  // in image/result/dialogue text. Use the same complete source used by the
+  // serial reference builder so a valid scene asset cannot disappear merely
+  // because the model paraphrased the location.
+  const promptText = [
+    storyboard?.title,
+    storyboard?.location,
+    storyboard?.time,
+    storyboard?.videoPrompt,
+    storyboard?.action,
+    storyboard?.description,
+    storyboard?.result,
+    storyboard?.imagePrompt,
+    storyboard?.atmosphere,
+    storyboard?.dialogue,
+  ].filter(Boolean).join('\n')
+  const allScenes = db.select().from(schema.scenes).all()
+  const episodeSceneIds = storyboard?.episodeId
+    ? new Set(db.select().from(schema.episodeScenes)
+      .where(eq(schema.episodeScenes.episodeId, storyboard.episodeId)).all()
+      .map(link => link.sceneId))
+    : new Set<number>()
+  const sceneCandidates = episodeSceneIds.size
+    ? allScenes.filter(item => episodeSceneIds.has(item.id))
+    : allScenes.filter(item => !storyboard?.episodeId || item.episodeId === storyboard.episodeId || item.dramaId === (drama?.id || episode?.dramaId))
+  const requestedLocation = String(storyboard?.location || '').trim()
+  const normalizedPromptText = normalizeVideoAssetText(promptText)
+  const staleScene = storyboard?.sceneId
+    ? allScenes.find(item => item.id === storyboard.sceneId && !item.deletedAt)
+    : null
+  const sceneLocationHints = [
+    requestedLocation,
+    String(staleScene?.location || '').trim(),
+  ].filter(Boolean)
+  const sceneTimeHints = [
+    String(storyboard?.time || '').trim(),
+    String(staleScene?.time || '').trim(),
+  ].filter(Boolean)
+  const promptScene = sceneCandidates
+    .filter(item => !item.deletedAt
+      && item.location
+      && (sceneLocationHints.some(hint => sameVideoEntityText(item.location, hint))
+        || normalizedPromptText.includes(normalizeVideoAssetText(item.location))
+        || (item.prompt && normalizedPromptText.includes(normalizeVideoAssetText(item.prompt)))))
+    .sort((a, b) => {
+      const aScore = sceneVideoCandidateScore(a, sceneLocationHints, sceneTimeHints, normalizedPromptText)
+      const bScore = sceneVideoCandidateScore(b, sceneLocationHints, sceneTimeHints, normalizedPromptText)
+      if (bScore !== aScore) return bScore > aScore ? 1 : -1
+      const bId = Number((b as any).id || 0)
+      const aId = Number((a as any).id || 0)
+      return bId === aId ? 0 : (bId > aId ? 1 : -1)
+    })[0]
+  // Re-decomposition may leave a legacy scene_id on the storyboard.  Once
+  // episodeScenes exists, an explicit id is only valid when it is one of the
+  // current episode's linked scenes; never fall back to another scene from
+  // the same drama because that produces a visually wrong/blank background.
+  const explicitScene = storyboard?.sceneId
+    ? allScenes.find(item => item.id === storyboard.sceneId
+      && !item.deletedAt
+      && (episodeSceneIds.size
+        ? episodeSceneIds.has(item.id)
+        : (item.episodeId === storyboard?.episodeId || item.dramaId === (drama?.id || episode?.dramaId))))
+    : null
+  // A storyboard's explicit scene_id is authoritative.  Prompt text can
+  // mention another place (for example a character's destination or a
+  // transition), but it must never replace the scene asset selected during
+  // decomposition.  Only fall back to textual matching when no valid id was
+  // stored.
+  // If the episode has exactly one linked scene, it is authoritative even
+  // when the model omitted or paraphrased location/time in the shot. This is
+  // the safe case where no cross-scene guess is possible.
+  const soleEpisodeScene = episodeSceneIds.size === 1
+    ? sceneCandidates.find(item => !item.deletedAt)
+    : null
+  const scene = explicitScene || promptScene || soleEpisodeScene
+  if (requestedLocation && !scene) {
+    throw new Error(`镜头${storyboard?.storyboardNumber || record.id}未绑定场景资产“${requestedLocation}”，已阻止生成白底视频；请重新提取场景并重拆解分镜`)
+  }
   const characterIds = storyboard?.id
     ? db.select().from(schema.storyboardCharacters)
       .where(eq(schema.storyboardCharacters.storyboardId, storyboard.id))
       .all()
       .map(item => item.characterId)
     : []
-  const characters = characterIds.length
-    ? db.select().from(schema.characters).all()
-      .filter(char => characterIds.includes(char.id) && !char.deletedAt && char.imageUrl)
+  const allCharacters = db.select().from(schema.characters).all()
+    .filter(char => !char.deletedAt && char.dramaId === (drama?.id || episode?.dramaId) && entityImageUrl(char))
+  const normalizedPrompt = normalizeVideoAssetText(promptText)
+  const mentionedCharacters = allCharacters.filter(char => {
+    const name = String(char.name || '').trim()
+    return !!name && normalizedPrompt.includes(normalizeVideoAssetText(name))
+      && !isRelationshipOnlyVideoCharacterMention(promptText, name)
+      && !isExplicitlyAbsentVideoCharacter(promptText, name)
+  })
+  const roleNames = extractVideoRoleNames(promptText)
+  const taggedCharacters = roleNames.length
+    ? allCharacters.filter(char => roleNames.some(name => normalizeVideoAssetText(name) === normalizeVideoAssetText(char.name)))
     : []
+  const characters = roleNames.length
+    ? taggedCharacters
+    : mentionedCharacters.length
+      ? mentionedCharacters
+      : allCharacters.filter(char => characterIds.includes(char.id))
+  const props = db.select().from(schema.props).all()
+    .filter(prop => !prop.deletedAt && prop.dramaId === (drama?.id || episode?.dramaId) && entityImageUrl(prop)
+      && prop.name && promptText.includes(prop.name))
 
   return {
     episodeId: episode?.id || storyboard?.episodeId || null,
     storyboardNum: storyboard?.storyboardNumber || null,
     groupName: drama?.title ? `${drama.title}-火山素材库` : record.dramaId ? `Eggfans-短剧-${record.dramaId}` : null,
     sceneName: scene?.location || storyboard?.location || '',
-    sceneImages: scene?.imageUrl ? [{ name: scene?.location || storyboard?.location || '场景', url: scene.imageUrl }] : [],
+    sceneImages: sceneImageUrl(scene) ? [{ name: scene?.location || storyboard?.location || '场景', url: sceneImageUrl(scene)! }] : [],
     characterImages: characters.map(char => ({
       characterId: char.id,
       name: char.name,
-      url: char.imageUrl!,
+      url: entityImageUrl(char)!,
       asset: buildCharacterExistingVolcAsset(char),
     })),
+    propImages: props.map(prop => ({ name: prop.name, url: entityImageUrl(prop)! })),
   }
+}
+
+/** Return the usable asset path regardless of whether it came from a remote
+ * image_url or a downloaded/generated local_path. */
+function entityImageUrl(entity: { imageUrl?: string | null; localPath?: string | null }) {
+  const localPath = String(entity.localPath || '').trim()
+  // The local copy is the durable source for ComfyUI. Prefer it only when it
+  // is actually readable; otherwise retain a valid remote image_url fallback.
+  if (localPath && isReadableLocalAsset(localPath)) return localPath
+  return String(entity.imageUrl || localPath || '').trim() || null
+}
+
+function sceneImageUrl(scene: { imageUrl?: string | null; localPath?: string | null } | null | undefined) {
+  return entityImageUrl(scene || {})
+}
+
+function normalizeVideoAssetText(value: unknown) {
+  return String(value || '').trim().replace(/[\s\u3000]+/g, '').toLocaleLowerCase()
+}
+
+function sameVideoEntityText(left: unknown, right: unknown) {
+  const a = normalizeVideoAssetText(left)
+  const b = normalizeVideoAssetText(right)
+  return !!a && !!b && (a === b || a.includes(b) || b.includes(a))
+}
+
+function sceneVideoCandidateScore(
+  scene: { location?: string | null; time?: string | null; prompt?: string | null },
+  locationHints: string[],
+  timeHints: string[],
+  normalizedPromptText: string,
+) {
+  const location = String(scene.location || '').trim()
+  let score = locationHints.some(hint => sameVideoEntityText(location, hint)) ? 100 : 0
+  if (location && normalizedPromptText.includes(normalizeVideoAssetText(location))) score += 30
+  if (scene.prompt && normalizedPromptText.includes(normalizeVideoAssetText(scene.prompt))) score += 20
+  if (timeHints.some(hint => sameVideoEntityText(scene.time, hint))) score += 10
+  return score
+}
+
+function extractVideoRoleNames(prompt: string) {
+  const names: string[] = []
+  const pattern = /<role>\s*([^<]+?)\s*<\/role>/gi
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(String(prompt || '')))) {
+    const name = String(match[1] || '').trim()
+    if (name && !names.some(item => normalizeVideoAssetText(item) === normalizeVideoAssetText(name))) names.push(name)
+  }
+  return names
+}
+
+function isExplicitlyAbsentVideoCharacter(prompt: string, name: string) {
+  const source = normalizeVideoAssetText(prompt).replace(/<[^>]+>/g, '')
+  const absent = '(?:未入画|暂未入画|尚未入画|未出现|不在画面|不入画|不出现)'
+  return new RegExp(`${escapeVideoRegExp(normalizeVideoAssetText(name))}[\\s,，。；;:：、-]*${absent}`).test(source)
+}
+
+function isRelationshipOnlyVideoCharacterMention(prompt: string, name: string) {
+  const normalizedName = normalizeVideoAssetText(name)
+  if (!normalizedName) return false
+  const source = normalizeVideoAssetText(prompt).replace(/<[^>]+>/g, '')
+  let offset = source.indexOf(normalizedName)
+  while (offset >= 0) {
+    const before = source.slice(Math.max(0, offset - 8), offset)
+    const after = source.slice(offset + normalizedName.length, offset + normalizedName.length + 8)
+    if (/的(?:父亲|母亲|女儿|儿子|丈夫|妻子|哥哥|姐姐|弟弟|妹妹|老板|店主|同事|朋友)/.test(after)
+      || /(?:父亲|母亲|女儿|儿子|丈夫|妻子|哥哥|姐姐|弟弟|妹妹|老板|店主|同事|朋友)的$/.test(before)) {
+      offset = source.indexOf(normalizedName, offset + normalizedName.length)
+      continue
+    }
+    return false
+  }
+  return true
+}
+
+function escapeVideoRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function isReadableLocalAsset(value: string) {
+  const raw = String(value || '').trim()
+  if (!raw) return false
+  const staticPath = getStaticRelativePath(raw)
+  if (staticPath) return fs.existsSync(getAbsolutePath(staticPath))
+  return fs.existsSync(raw)
 }
 
 function buildCharacterExistingVolcAsset(
@@ -1488,7 +2571,7 @@ function buildCharacterExistingVolcAsset(
     providerAssetId: providerAssetId || assetUri.replace(/^asset:\/\//i, ''),
     assetUri: assetUri || providerAssetId,
     groupName: '火山虚拟角色库',
-    publicUrl: char.imageUrl || '',
+    publicUrl: entityImageUrl(char) || '',
   }
 }
 
@@ -1535,8 +2618,10 @@ async function pollVideoTask(
 ) {
   const adapter = getVideoAdapter(config.provider)
   const intervalMs = options.intervalMs ?? VIDEO_POLL_INTERVAL_MS
-  const maxAttempts = options.maxAttempts ?? VIDEO_POLL_MAX_ATTEMPTS
+  const maxAttempts = options.maxAttempts ?? getVideoPollMaxAttempts(config.provider)
   const initialDelayMs = options.initialDelayMs ?? intervalMs
+  const connectivityFailureLimit = getVideoPollConnectivityFailureLimit(config.provider)
+  let consecutiveConnectivityFailures = 0
 
   for (let i = 0; i < maxAttempts; i++) {
     const delayMs = i === 0 ? initialDelayMs : intervalMs
@@ -1553,6 +2638,15 @@ async function pollVideoTask(
         })
         return
       }
+      if (sequenceRunIsTerminal(current.sequenceRunId)) {
+        cancelVideoGenerationForSequence(id)
+        logTaskProgress('VideoTask', 'poll-stop-parent-terminal', {
+          id,
+          taskId,
+          sequenceRunId: current.sequenceRunId,
+        })
+        return
+      }
       const { url, method, headers } = adapter.buildPollRequest(config, taskId)
       logTaskProgress('VideoTask', 'poll-request', {
         id,
@@ -1563,6 +2657,7 @@ async function pollVideoTask(
         attempt: i + 1,
       })
       const resp = await fetch(url, buildVideoFetchInit(method, headers, undefined, VIDEO_POLL_REQUEST_TIMEOUT_MS))
+      consecutiveConnectivityFailures = 0
       if (!resp.ok) {
         const errorBody = await resp.text()
         logTaskWarn('VideoTask', 'poll-http-error', {
@@ -1584,11 +2679,19 @@ async function pollVideoTask(
       }
       const result = await resp.json() as any
 
-      const pollResp = adapter.parsePollResponse(result)
+      // Pass the active provider config so adapters can construct media URLs
+      // against the configured gateway (including custom local ComfyUI ports).
+      const pollResp = adapter.parsePollResponse(result, config)
 
       if (pollResp.status === 'completed' && pollResp.videoUrl) {
+        if (pollResp.warning) logTaskWarn('VideoTask', 'h3-refinement-fallback', { id, warning: pollResp.warning })
+        if (sequenceRunIsTerminal(current.sequenceRunId)) {
+          cancelVideoGenerationForSequence(id)
+          logTaskProgress('VideoTask', 'poll-complete-parent-terminal', { id, taskId, sequenceRunId: current.sequenceRunId })
+          return
+        }
         logTaskSuccess('VideoTask', 'poll-complete', { id, taskId, videoUrl: pollResp.videoUrl })
-        await handleVideoComplete(id, pollResp.videoUrl, null, storyboardId)
+        await handleVideoComplete(id, pollResp.videoUrl, null, storyboardId, config)
         return
       }
       if (pollResp.status === 'failed') {
@@ -1601,6 +2704,29 @@ async function pollVideoTask(
         return
       }
     } catch (err: any) {
+      const errorMessage = String(err?.message || err || 'unknown error')
+      const isConnectivityFailure = /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket|network/i.test(errorMessage)
+      if (isConnectivityFailure) {
+        consecutiveConnectivityFailures += 1
+        if (connectivityFailureLimit > 0 && consecutiveConnectivityFailures >= connectivityFailureLimit) {
+          const failureMessage = `本地 ComfyUI 已失联：连续 ${consecutiveConnectivityFailures} 次轮询失败（${errorMessage}），已停止等待，请检查 ComfyUI 进程和显存。`
+          logTaskError('VideoTask', 'poll-provider-unreachable', {
+            id,
+            taskId,
+            provider: config.provider,
+            attempt: i + 1,
+            consecutiveFailures: consecutiveConnectivityFailures,
+            error: errorMessage,
+          })
+          db.update(schema.videoGenerations)
+            .set({ status: 'failed', errorMsg: failureMessage, updatedAt: now() })
+            .where(eq(schema.videoGenerations.id, id))
+            .run()
+          return
+        }
+      } else {
+        consecutiveConnectivityFailures = 0
+      }
       if (i === maxAttempts - 1) {
         logTaskError('VideoTask', 'poll-timeout', { id, taskId, error: err.message })
         db.update(schema.videoGenerations)
@@ -1629,10 +2755,23 @@ export function formatVideoProviderError(error: unknown) {
     }
     return [code, message].filter(Boolean).join(': ') || 'Video generation failed'
   }
-  return String(error || 'Video generation failed')
+  const text = String(error || 'Video generation failed')
+  if (/fetch failed|econnrefused|无法连接.*worker/i.test(text)) {
+    return `本地 MiniMax H3 Worker 无法连接：${text}。软件已执行自检和自动修复；若仍失败，请查看软件数据目录 logs/comfyui-worker.log。`
+  }
+  if (/outofmemory|out of memory|cuda out of memory|显存不足/i.test(text)) {
+    return '本地 MiniMax H3 生成失败：显存不足。请关闭其他占显存程序，确认使用指定的 int8 主模型与 Turbo LoRA，并按需要降低“百万像素”；Worker 会在串行镜头之间自动清理显存。'
+  }
+  return text
 }
 
-async function handleVideoComplete(id: number, videoUrl: string, duration: number | null | undefined, storyboardId?: number | null) {
+async function handleVideoComplete(
+  id: number,
+  videoUrl: string,
+  duration: number | null | undefined,
+  storyboardId?: number | null,
+  config?: AIConfig,
+) {
   const [record] = db.select().from(schema.videoGenerations)
     .where(eq(schema.videoGenerations.id, id)).all()
   if (!record || record.deletedAt) {
@@ -1646,6 +2785,29 @@ async function handleVideoComplete(id: number, videoUrl: string, duration: numbe
 
   const isCurrentGeneration = isLatestVideoGeneration(record.id, record.storyboardId || storyboardId)
 
+  if (String(record.provider || '').trim().toLowerCase() === 'comfyui') {
+    try {
+      const memory = await releaseComfyUiMemory(config || resolveVideoPollingConfig(record) || { baseUrl: 'http://127.0.0.1:8188' })
+      logTaskProgress('VideoTask', 'comfyui-memory-released', {
+        id,
+        storyboardId,
+        reason: 'generation-complete',
+        vramFreeBytes: memory.free,
+        vramTotalBytes: memory.total,
+        vramRequiredFreeBytes: memory.requiredFree,
+        releasePolls: memory.polls,
+      })
+    } catch (err: any) {
+      const errorMsg = `ComfyUI 显存释放未确认，已阻止下一镜：${err?.message || String(err)}`
+      db.update(schema.videoGenerations)
+        .set({ status: 'failed', errorMsg, updatedAt: now() })
+        .where(eq(schema.videoGenerations.id, id))
+        .run()
+      logTaskError('VideoTask', 'comfyui-memory-release-failed', { id, storyboardId, error: errorMsg })
+      throw new Error(errorMsg)
+    }
+  }
+
   db.update(schema.videoGenerations)
     .set({ videoUrl, status: 'completed', completedAt: now(), updatedAt: now() })
     .where(eq(schema.videoGenerations.id, id))
@@ -1653,13 +2815,16 @@ async function handleVideoComplete(id: number, videoUrl: string, duration: numbe
 
   if (storyboardId && isCurrentGeneration) {
     db.update(schema.storyboards)
-      .set({ videoUrl, duration: duration || undefined, updatedAt: now() })
+      .set({ videoUrl, duration: duration || undefined })
       .where(eq(schema.storyboards.id, storyboardId))
       .run()
   }
 
   try {
-    const localPath = await downloadFile(videoUrl, 'videos', { timeoutMs: VIDEO_DOWNLOAD_TIMEOUT_MS })
+    const downloadTimeout = String(record.provider || '').trim().toLowerCase() === 'autodl_comfyui'
+      ? 180_000
+      : VIDEO_DOWNLOAD_TIMEOUT_MS
+    const localPath = await downloadFile(videoUrl, 'videos', { timeoutMs: downloadTimeout })
     const [current] = db.select().from(schema.videoGenerations)
       .where(eq(schema.videoGenerations.id, id)).all()
     if (!current || current.deletedAt) {
@@ -1679,7 +2844,7 @@ async function handleVideoComplete(id: number, videoUrl: string, duration: numbe
 
     if (storyboardId && isLatestVideoGeneration(id, storyboardId)) {
       db.update(schema.storyboards)
-        .set({ videoUrl: localPath, duration: duration || undefined, updatedAt: now() })
+        .set({ videoUrl: localPath, duration: duration || undefined })
         .where(eq(schema.storyboards.id, storyboardId))
         .run()
     }
@@ -1706,7 +2871,10 @@ export async function ensureVideoLocalCopy(generationId: number): Promise<string
   if (!record?.videoUrl) return null
   if (record.localPath) return record.localPath
 
-  const localPath = await downloadFile(record.videoUrl, 'videos', { timeoutMs: VIDEO_DOWNLOAD_TIMEOUT_MS })
+  const downloadTimeout = String(record.provider || '').trim().toLowerCase() === 'autodl_comfyui'
+    ? 180_000
+    : VIDEO_DOWNLOAD_TIMEOUT_MS
+  const localPath = await downloadFile(record.videoUrl, 'videos', { timeoutMs: downloadTimeout })
   db.update(schema.videoGenerations)
     .set({ localPath, updatedAt: now() })
     .where(eq(schema.videoGenerations.id, generationId))
@@ -1714,7 +2882,7 @@ export async function ensureVideoLocalCopy(generationId: number): Promise<string
 
   if (record.storyboardId) {
     db.update(schema.storyboards)
-      .set({ videoUrl: localPath, updatedAt: now() })
+      .set({ videoUrl: localPath })
       .where(eq(schema.storyboards.id, record.storyboardId))
       .run()
   }

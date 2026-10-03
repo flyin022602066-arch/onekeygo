@@ -109,6 +109,10 @@ export class MijingImageAdapter implements ImageProviderAdapter {
 }
 
 function normalizeMijingImageSize(size?: string | null, model?: string | null) {
+  if (isMijingGptImage2All(model)) {
+    const value = String(size || '').trim()
+    return GPT_IMAGE_2_ALL_SIZES.has(value) ? value : '3840x2160'
+  }
   if (isMijingGptImage2(model)) {
     const normalized = String(size || '').trim().toUpperCase()
     return ['1K', '2K', '4K'].includes(normalized) ? normalized : '1K'
@@ -122,8 +126,24 @@ function normalizeMijingImageSize(size?: string | null, model?: string | null) {
 }
 
 function isMijingGptImage2(model?: string | null) {
-  return /^gpt-image-2$/i.test(String(model || '').trim())
+  return /^gpt-image-2(?:-all)?$/i.test(String(model || '').trim())
 }
+
+function isMijingGptImage2All(model?: string | null) {
+  return /^gpt-image-2-all$/i.test(String(model || '').trim())
+}
+
+const GPT_IMAGE_2_ALL_SIZES = new Set([
+  '1024x1024',
+  '1536x1024',
+  '1024x1536',
+  '2048x2048',
+  '2048x1152',
+  '1152x2048',
+  '3840x2160',
+  '2160x3840',
+  'auto',
+])
 
 function parseReferences(value?: string | null) {
   if (!value) return []

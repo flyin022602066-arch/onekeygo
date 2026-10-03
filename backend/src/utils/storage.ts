@@ -9,6 +9,59 @@ import { appConfig } from '../config.js'
 
 const STORAGE_ROOT = appConfig.storage.localPath
 
+// Asset references are sent to the video models as visual identity anchors.
+// Keep all newly uploaded/generated character, scene and prop images at a
+// consistent UHD canvas so a low-resolution provider response cannot silently
+// become the project's reference image.
+export const ASSET_IMAGE_WIDTH = 3840
+export const ASSET_IMAGE_HEIGHT = 2160
+
+async function normalizeAssetImage(data: ArrayBuffer | Buffer): Promise<Buffer> {
+  return sharp(data)
+    .rotate()
+    .resize({ width: ASSET_IMAGE_WIDTH, height: ASSET_IMAGE_HEIGHT, fit: 'cover', position: 'centre' })
+    .png()
+    .toBuffer()
+}
+
+/** Save an asset upload as an exact 3840x2160 PNG. */
+export async function saveUploadedAssetImage(data: ArrayBuffer | Buffer, subDir: string): Promise<string> {
+  const dir = path.join(STORAGE_ROOT, subDir)
+  fs.mkdirSync(dir, { recursive: true })
+  const filename = `${uuid()}.png`
+  const filePath = path.join(dir, filename)
+  fs.writeFileSync(filePath, await normalizeAssetImage(Buffer.isBuffer(data) ? data : Buffer.from(data)))
+  return `static/${subDir}/${filename}`
+}
+
+/** Download and normalize a generated asset image to the same UHD canvas. */
+export async function downloadAssetImage(url: string, subDir = 'images', options: { timeoutMs?: number } = {}): Promise<string> {
+  const controller = new AbortController()
+  const timeout = options.timeoutMs ? setTimeout(() => controller.abort(), options.timeoutMs) : null
+  try {
+    const response = await fetch(url, { signal: controller.signal })
+    if (!response.ok) throw new Error(`Download failed: ${response.status}`)
+    const normalized = await normalizeAssetImage(Buffer.from(await response.arrayBuffer()))
+    const dir = path.join(STORAGE_ROOT, subDir)
+    fs.mkdirSync(dir, { recursive: true })
+    const filename = `${uuid()}.png`
+    fs.writeFileSync(path.join(dir, filename), normalized)
+    return `static/${subDir}/${filename}`
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+/** Save a base64 provider result as an exact 3840x2160 PNG asset. */
+export async function saveBase64AssetImage(base64Data: string, subDir = 'images'): Promise<string> {
+  const normalized = await normalizeAssetImage(Buffer.from(base64Data, 'base64'))
+  const dir = path.join(STORAGE_ROOT, subDir)
+  fs.mkdirSync(dir, { recursive: true })
+  const filename = `${uuid()}.png`
+  fs.writeFileSync(path.join(dir, filename), normalized)
+  return `static/${subDir}/${filename}`
+}
+
 /**
  * 下载远程文件到本地存储
  */
@@ -72,9 +125,13 @@ export async function saveUploadedFileWithExtension(data: ArrayBuffer, subDir: s
 
 function getExtFromUrl(url: string): string {
   try {
-    const pathname = new URL(url).pathname
+    const parsed = new URL(url)
+    const pathname = parsed.pathname
     const ext = path.extname(pathname)
     if (ext && ext.length <= 5) return ext
+    const filename = parsed.searchParams.get('filename') || ''
+    const queryExt = path.extname(filename)
+    if (queryExt && queryExt.length <= 5) return queryExt
   } catch {}
   return '.bin'
 }

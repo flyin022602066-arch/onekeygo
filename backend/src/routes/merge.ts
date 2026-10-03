@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { eq } from 'drizzle-orm'
 import { db, schema } from '../db/index.js'
 import { success, badRequest } from '../utils/response.js'
-import { mergeEpisodeVideos } from '../services/ffmpeg-merge.js'
+import { isMergeCurrent, mergeEpisodeVideos } from '../services/ffmpeg-merge.js'
 import { copyStaticVideoToDesktop } from '../services/desktop-export.js'
 import { toSnakeCase } from '../utils/transform.js'
 import { logTaskError, logTaskStart, logTaskSuccess } from '../utils/task-logger.js'
@@ -33,10 +33,24 @@ app.get('/episodes/:id/merge', async (c) => {
     .where(eq(schema.videoMerges.episodeId, episodeId))
     .all()
 
-  const latest = merges[merges.length - 1]
+  const latest = [...merges].sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0]
   if (!latest) return success(c, null)
-
-  return success(c, toSnakeCase(latest))
+  const storyboards = db.select().from(schema.storyboards)
+    .where(eq(schema.storyboards.episodeId, episodeId))
+    .orderBy(schema.storyboards.storyboardNumber)
+    .all()
+    .filter(item => !item.deletedAt)
+  const storyboardIds = new Set(storyboards.map(item => item.id))
+  const generations = db.select().from(schema.videoGenerations).all()
+    .filter(item => !item.deletedAt && item.storyboardId && storyboardIds.has(item.storyboardId))
+  const isCurrent = isMergeCurrent(latest, storyboards, generations)
+  return success(c, {
+    ...toSnakeCase(latest),
+    // Never let the client render/download an obsolete merge. The record is
+    // kept for history, but its URL is hidden until a fresh merge completes.
+    ...(isCurrent ? {} : { status: latest.status === 'processing' ? latest.status : 'stale', merged_url: null, mergedUrl: null }),
+    is_current: isCurrent,
+  })
 })
 
 // POST /episodes/:id/merge/export-desktop — 将最新成片保存到本机桌面
@@ -48,7 +62,17 @@ app.post('/episodes/:id/merge/export-desktop', async (c) => {
   const merges = db.select().from(schema.videoMerges)
     .where(eq(schema.videoMerges.episodeId, episodeId))
     .all()
-  const latest = [...merges].reverse().find(item => item.status === 'completed' && item.mergedUrl)
+  const storyboards = db.select().from(schema.storyboards)
+    .where(eq(schema.storyboards.episodeId, episodeId))
+    .orderBy(schema.storyboards.storyboardNumber)
+    .all()
+    .filter(item => !item.deletedAt)
+  const storyboardIds = new Set(storyboards.map(item => item.id))
+  const generations = db.select().from(schema.videoGenerations).all()
+    .filter(item => !item.deletedAt && item.storyboardId && storyboardIds.has(item.storyboardId))
+  const latest = [...merges].reverse().find(item => (
+    item.status === 'completed' && item.mergedUrl && isMergeCurrent(item, storyboards, generations)
+  ))
   if (!latest?.mergedUrl) return badRequest(c, '还没有可保存的成片，请先完成拼接')
 
   const [drama] = ep.dramaId

@@ -72,7 +72,7 @@ export interface NormalizedEggfansModel {
   sortOrder: number
 }
 
-const PRICING_URL = 'https://eggfans.com/api/pricing_new'
+export const EGGFANS_PRICING_URL = 'https://api.eggfans.org/api/pricing_new'
 const CACHE_MS = 10 * 60 * 1000
 
 let cachedAt = 0
@@ -81,13 +81,99 @@ let cachedModels: NormalizedEggfansModel[] = []
 export async function getEggfansModels(fetchImpl: typeof fetch = fetch): Promise<NormalizedEggfansModel[]> {
   if (cachedModels.length && Date.now() - cachedAt < CACHE_MS) return cachedModels
 
-  const resp = await fetchImpl(PRICING_URL)
+  let resp: Response | null = null
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const requestUrl = `${EGGFANS_PRICING_URL}?_=${Date.now()}-${attempt}`
+      const requestInit = {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': 'Mijing-Studio/2.0',
+        },
+        signal: AbortSignal.timeout(20_000),
+      }
+      try {
+        resp = await fetchImpl(requestUrl, requestInit)
+      } catch (error) {
+        // Electron's embedded Node fetch can intermittently reset this host's
+        // TLS connection. Fall back to the native https client for GETs.
+        if (fetchImpl !== fetch) throw error
+        resp = await fetchEggfansHttps(requestUrl, requestInit.headers)
+      }
+      if (resp.ok) break
+      if (resp.status < 500 || attempt === 2) break
+    } catch (error) {
+      lastError = error
+      if (attempt === 2) throw error
+    }
+    await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)))
+  }
+  if (!resp) throw lastError instanceof Error ? lastError : new Error('Eggfans pricing fetch failed')
   if (!resp.ok) throw new Error(`Eggfans pricing fetch failed: ${resp.status}`)
 
   const payload = await resp.json() as EggfansPricingResponse
   cachedModels = normalizeEggfansCatalog(payload)
   cachedAt = Date.now()
   return cachedModels
+}
+
+function fetchEggfansHttps(url: string, headers: Record<string, string>): Promise<Response> {
+  if (isElectronRuntime()) {
+    return fetchEggfansElectronNet(url, headers).catch(() => fetchEggfansNodeHttps(url, headers))
+  }
+  return fetchEggfansNodeHttps(url, headers)
+}
+
+function isElectronRuntime() {
+  return !!(process.versions as Record<string, string | undefined>).electron
+}
+
+function fetchEggfansElectronNet(url: string, headers: Record<string, string>): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    // Keep the backend package runnable under plain Node (tests/server mode)
+    // while using Chromium's network stack in the packaged Electron app.
+    const dynamicImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>
+    dynamicImport('electron').then(({ net }: { net: any }) => {
+      const request = net.request({ method: 'GET', url })
+      for (const [name, value] of Object.entries(headers)) request.setHeader(name, value)
+      let settled = false
+      const finish = (callback: () => void) => {
+        if (settled) return
+        settled = true
+        callback()
+      }
+      request.on('response', (response: any) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk: Buffer | Uint8Array | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+        })
+        response.on('end', () => finish(() => resolve(new Response(Buffer.concat(chunks), {
+          status: response.statusCode || 500,
+          headers: response.headers || {},
+        }))))
+        response.on('error', (error: unknown) => finish(() => reject(error)))
+      })
+      request.on('error', (error: unknown) => finish(() => reject(error)))
+      request.setTimeout?.(20_000, () => request.abort())
+      request.end()
+    }).catch(error => reject(error))
+  })
+}
+
+function fetchEggfansNodeHttps(url: string, headers: Record<string, string>): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const request = https.get(url, { headers, servername: 'api.eggfans.org' }, response => {
+      const chunks: Buffer[] = []
+      response.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      response.on('end', () => resolve(new Response(Buffer.concat(chunks), {
+        status: response.statusCode || 500,
+        headers: response.headers as Record<string, string>,
+      })))
+    })
+    request.setTimeout(20_000, () => request.destroy(new Error('Eggfans pricing request timed out')))
+    request.on('error', reject)
+  })
 }
 
 export function clearEggfansModelCache() {
@@ -333,14 +419,14 @@ function deriveServiceType(modelType: string, tags: string[], endpointTypes: str
   const tagText = tags.join(',').toLowerCase()
   const endpointText = endpointTypes.join(',').toLowerCase()
 
-  if (modelType === '文本' || modelType === '对话') return 'text'
-  if (modelType === '图像') return 'image'
+  if (['文本', '对话', 'text', 'chat'].some(value => modelTypeText === value || modelTypeText.includes(value))) return 'text'
+  if (['图像', '图片', 'image'].some(value => modelTypeText === value || modelTypeText.includes(value))) return 'image'
   if (modelType === '音视频' && tagText.includes('音频')) return 'audio'
   if (modelType === '音视频' && tagText.includes('视频')) return 'video'
   if (endpointText.includes('tts') || endpointText.includes('语音') || tagText.includes('音频')) return 'audio'
-  if (endpointText.includes('video') || endpointText.includes('视频') || tagText.includes('视频')) return 'video'
-  if (endpointText.includes('image') || endpointText.includes('图像') || tagText.includes('绘画')) return 'image'
-  if (endpointText.includes('openai') && (modelTypeText.includes('text') || tagText.includes('对话'))) return 'text'
+  if (endpointText.includes('video') || endpointText.includes('视频') || endpointText.includes('瑙嗛') || tagText.includes('视频') || tagText.includes('瑙嗛')) return 'video'
+  if (endpointText.includes('image') || endpointText.includes('图像') || endpointText.includes('图片') || endpointText.includes('鍥惧儚') || tagText.includes('绘画') || tagText.includes('缁樼敾')) return 'image'
+  if (endpointText.includes('openai') && (modelTypeText.includes('text') || tagText.includes('对话') || tagText.includes('瀵硅瘽'))) return 'text'
   return null
 }
 
@@ -350,3 +436,4 @@ function splitList(value?: string) {
     .map(item => item.trim())
     .filter(Boolean)
 }
+import https from 'node:https'

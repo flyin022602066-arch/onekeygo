@@ -79,6 +79,43 @@ test('Mijing gpt-image-2 uses the 1K high-quality defaults', () => {
   assert.equal(req.body.quality, 'high')
 })
 
+test('Mijing gpt-image-2-all preserves the extended size using the Mijing gateway credentials', () => {
+  const req = adapter.buildGenerateRequest(
+    {
+      provider: 'mijing',
+      baseUrl: 'https://api.magine.work',
+      apiKey: 'mijing-secret',
+      model: 'gpt-image-2-all',
+    },
+    {
+      id: 4,
+      prompt: 'vertical cinematic frame',
+      model: 'gpt-image-2-all',
+      size: '2160x3840',
+    },
+  )
+
+  assert.equal(req.url, 'https://api.magine.work/v1/images/generations')
+  assert.equal(req.headers.Authorization, 'Bearer mijing-secret')
+  assert.equal(req.body.model, 'gpt-image-2-all')
+  assert.equal(req.body.size, '2160x3840')
+  assert.equal(req.body.quality, 'high')
+})
+
+test('Mijing gpt-image-2-all falls back to the same horizontal 4K default as gpt-image-2-c', () => {
+  const req = adapter.buildGenerateRequest(
+    {
+      provider: 'mijing',
+      baseUrl: 'https://api.magine.work',
+      apiKey: 'mijing-secret',
+      model: 'gpt-image-2-all',
+    },
+    { id: 5, prompt: 'cinematic frame', model: 'gpt-image-2-all', size: '1920x1080' },
+  )
+
+  assert.equal(req.body.size, '3840x2160')
+})
+
 test('Mijing image requests keep the gateway saved in the configuration', () => {
   const req = new MijingImageAdapter().buildGenerateRequest(
     {

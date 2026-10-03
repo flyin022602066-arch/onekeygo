@@ -179,6 +179,7 @@ function transmissionParametersForServiceType(
 
   if (serviceType === 'image') {
     const isGptImage2 = /^gpt-image-2$/i.test(modelName)
+    const isGptImage2All = /^gpt-image-2-all$/i.test(modelName)
     return {
       requestShape: 'Mijing images generations',
       requiredFields: ['model', 'prompt'],
@@ -186,7 +187,11 @@ function transmissionParametersForServiceType(
       imageField: 'image',
       sizeField: 'size',
       qualityField: 'quality',
-      defaults: isGptImage2 ? { size: '1K', quality: 'high' } : undefined,
+      defaults: isGptImage2
+        ? { size: '1K', quality: 'high' }
+        : isGptImage2All
+          ? { size: '3840x2160', quality: 'high' }
+          : undefined,
       pollMethod: 'GET /v1/images/generations/{task_id}',
     }
   }

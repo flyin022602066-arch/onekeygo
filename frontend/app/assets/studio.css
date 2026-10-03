@@ -160,6 +160,8 @@ p { line-height: 1.75; }
 }
 
 .btn-primary:active { filter: brightness(0.97); transform: translateY(0); }
+.btn-danger { color: var(--error); border-color: rgba(210, 79, 102, 0.35); }
+.btn-danger:hover { color: #fff; background: var(--error); border-color: var(--error); }
 .btn-ghost {
   background: transparent; border-color: transparent;
   box-shadow: none; color: var(--text-2);
@@ -254,3 +256,8 @@ select.input { appearance: none; cursor: pointer; background-image: url("data:im
 .stagger-3 { animation-delay: 0.15s; }
 .stagger-4 { animation-delay: 0.2s; }
 .stagger-5 { animation-delay: 0.25s; }
+.sequence-mode-hint {
+  color: var(--text-muted, #8d96a8);
+  font-size: 12px;
+  white-space: nowrap;
+}

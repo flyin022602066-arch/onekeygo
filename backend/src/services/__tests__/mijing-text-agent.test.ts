@@ -5,11 +5,18 @@ import {
   buildStoryboardScriptChunks,
   distributeStoryboardQuota,
   estimateCompactShotLimit,
+  getStoryboardOutputTokenBudget,
   getMijingAgentTimeoutMs,
+  parseJsonObjectWithRepair,
+  normalizeExtractedProps,
+  repairMissingStoryboardDialogue,
   normalizeStoryboards,
   requestMijingPlainChat,
+  resolveStoryboardChunkLimit,
   splitScriptForMijing,
+  supportsPlainTextAgentProvider,
   supportsMijingPlainAgent,
+  validateStoryboardCompleteness,
 } from '../mijing-text-agent.js'
 import { getStoryboardBreakdownModeRule } from '../../agents/storyboard-video-rules.js'
 
@@ -51,10 +58,141 @@ test('storyboard quota helper distributes values across buckets', () => {
   assert.deepEqual(distributeStoryboardQuota(10, 1), [10])
 })
 
+test('plain streaming agent covers Eggfans and Mijing text without affecting unrelated providers', () => {
+  assert.equal(supportsPlainTextAgentProvider('eggfans', 'storyboard_breaker'), true)
+  assert.equal(supportsPlainTextAgentProvider('Mijing', 'extractor'), true)
+  assert.equal(supportsPlainTextAgentProvider('openai', 'storyboard_breaker'), false)
+  assert.equal(supportsPlainTextAgentProvider('eggfans', 'voice_assigner'), false)
+})
+
+test('local MiniMax storyboard planning allows a complete episode up to 120 shots', () => {
+  assert.equal(resolveStoryboardChunkLimit('短场景', { mode: 'minimax_local_8s', shotDuration: 5 }), 120)
+  assert.equal(resolveStoryboardChunkLimit('短场景', null), 3)
+})
+
+test('normalizeExtractedProps keeps only props mentioned at least twice', () => {
+  assert.deepEqual(normalizeExtractedProps([
+    { name: '钥匙', type: '随身物品', description: '铜钥匙', mention_count: 2 },
+    { name: '纸杯', mention_count: 1 },
+    { name: '  手机  ', mentionCount: 3 },
+    { name: '', mention_count: 8 },
+  ]), [
+    { name: '钥匙', type: '随身物品', description: '铜钥匙', prompt: '铜钥匙', mention_count: 2 },
+    { name: '手机', type: '', description: '', prompt: '手机', mention_count: 3 },
+  ])
+})
+
+test('extractor JSON parsing retries once in non-streaming mode after a non-JSON response', async () => {
+  let retries = 0
+  const parsed = await parseJsonObjectWithRepair('I will analyze the screenplay first.', '角色场景道具提取', async () => {
+    retries++
+    return [
+      '`json',
+      JSON.stringify({ characters: [{ name: 'test-character' }], scenes: [], props: [] }),
+      '`',
+    ].join('\\n')
+  })
+
+  assert.equal(retries, 1)
+  assert.equal(parsed.characters[0].name, 'test-character')
+})
+
+test('extractor JSON parsing does not retry when the first response is valid', async () => {
+  let retries = 0
+  const parsed = await parseJsonObjectWithRepair(JSON.stringify({ characters: [], scenes: [], props: [] }), '角色场景道具提取', async () => {
+    retries++
+    return '{}'
+  })
+
+  assert.equal(retries, 0)
+  assert.deepEqual(parsed, { characters: [], scenes: [], props: [] })
+})
+
+test('storyboard JSON parsing repairs a missing comma between array objects', async () => {
+  let retries = 0
+  const parsed = await parseJsonObjectWithRepair(
+    '{"storyboards":[{"shot_number":1}{"shot_number":2}]}',
+    'storyboard',
+    async () => {
+      retries++
+      return '{}'
+    },
+  )
+
+  assert.equal(retries, 0)
+  assert.equal(parsed.storyboards.length, 2)
+})
+
 test('TK storyboard generation keeps the complete script in one global pass', () => {
   const source = `## S1 | Moon Hall | Night\n${'Ayla and Rowan continue the same confrontation. '.repeat(80)}`.trim()
   const chunks = buildStoryboardScriptChunks(source, { mode: 'tk_overseas' })
   assert.deepEqual(chunks, [source])
+})
+
+test('local MiniMax adaptive-duration storyboard generation keeps the complete script in one global continuity pass', () => {
+  const source = `第一场｜夜｜客厅\n${'甲和乙继续同一段连续动作与对白。'.repeat(900)}`.trim()
+  const chunks = buildStoryboardScriptChunks(source, { mode: 'minimax_local_8s', shotDuration: 8 })
+  assert.deepEqual(chunks, [source])
+})
+
+test('MiniMax Chinese storyboard budget scales with long source scripts', () => {
+  const source = '中'.repeat(1791)
+  assert.ok(getStoryboardOutputTokenBudget(undefined, source, { mode: 'minimax_local_8s' }) > 12000)
+  assert.equal(getStoryboardOutputTokenBudget(50000, source, { mode: 'minimax_local_8s' }), 50000)
+})
+
+test('storyboard completeness rejects a short but valid JSON response for a long local episode', () => {
+  const context = {
+    original_script: `## S1 | 厨房 | 日\n${'苏小小：继续做饭。\n'.repeat(250)}`,
+    characters: [{ id: 1, name: '苏小小' }],
+    scenes: [{ id: 10, location: '厨房', time: '日' }],
+  }
+  const short = Array.from({ length: 5 }, (_, index) => ({
+    shot_number: index + 1,
+    scene_id: 10,
+    location: '厨房',
+    character_ids: [1],
+    dialogue: index === 0 ? '苏小小：继续做饭。' : '',
+  }))
+  const result = validateStoryboardCompleteness(short, context, { mode: 'minimax_local_8s' })
+  assert.equal(result.valid, false)
+  assert.ok(result.minimumCount > short.length)
+  assert.match(result.reasons.join('；'), /镜头|对白/)
+})
+
+test('storyboard completeness accepts a covered local storyboard', () => {
+  const context = {
+    original_script: '## S1 | 厨房 | 日\n苏小小：继续做饭。',
+    characters: [{ id: 1, name: '苏小小' }],
+    scenes: [{ id: 10, location: '厨房', time: '日' }],
+  }
+  const result = validateStoryboardCompleteness([{
+    shot_number: 1,
+    scene_id: 10,
+    location: '厨房',
+    character_ids: [1],
+    dialogue: '苏小小：继续做饭。',
+  }], context, { mode: 'minimax_local_8s' })
+  assert.equal(result.valid, true)
+})
+
+test('automatic storyboard repair inserts a missing source dialogue without regenerating the episode', () => {
+  const context = {
+    original_script: '## S1 | 厨房 | 日\n甲：先别走。\n乙：我马上回来。',
+    characters: [{ id: 1, name: '甲' }, { id: 2, name: '乙' }],
+    scenes: [{ id: 10, location: '厨房', time: '日' }],
+  }
+  const repaired = repairMissingStoryboardDialogue([{
+    shot_number: 1,
+    scene_id: 10,
+    location: '厨房',
+    character_ids: [1, 2],
+    dialogue: '甲：先别走。',
+  }], context, { mode: 'minimax_local_8s' })
+
+  assert.ok(repaired)
+  assert.equal(repaired[0].dialogue, '甲：先别走。\n乙：我马上回来。')
+  assert.equal(validateStoryboardCompleteness(repaired, context, { mode: 'minimax_local_8s' }).valid, true)
 })
 
 test('TK storyboard rules preserve a global scene view and merge continuous dialogue', () => {
@@ -132,6 +270,170 @@ test('requestMijingPlainChat retries a saturated upstream and returns content', 
   assert.equal(requests[0].body.max_tokens, 1234)
   assert.equal(requests[0].body.tools, undefined)
   assert.equal(requests[0].body.stream, true)
+})
+
+test('normalizeStoryboards removes duplicated dialogue when the source contains one occurrence', () => {
+  const context = {
+    script: '## S1 | 厨房 | 夜\n苏小小：火候到了。她继续颠锅。',
+    original_script: '## S1 | 厨房 | 夜\n苏小小：火候到了。她继续颠锅。',
+    characters: [{ id: 1, name: '苏小小' }],
+    scenes: [{ id: 29, location: '厨房', time: '夜' }],
+  }
+  const storyboards = normalizeStoryboards([
+    { location: '厨房', scene_id: 29, character_ids: [1], dialogue: '苏小小：火候到了。' },
+    { location: '厨房', scene_id: 29, character_ids: [1], dialogue: '苏小小：火候到了。' },
+  ], context, null)
+  assert.equal(storyboards[0].dialogue, '苏小小：火候到了。')
+  assert.equal(storyboards[1].dialogue, '')
+})
+
+test('normalizeStoryboards keeps explicit scene_id when location text conflicts', () => {
+  const context = {
+    script: '客厅与厨房发生连续动作',
+    characters: [],
+    scenes: [
+      { id: 10, location: '客厅', time: '日' },
+      { id: 11, location: '厨房', time: '日' },
+    ],
+  }
+  const [storyboard] = normalizeStoryboards([
+    { location: '厨房', scene_id: 10, duration: 5 },
+  ], context, null)
+  assert.equal(storyboard.scene_id, 10)
+  assert.equal(storyboard.location, '客厅')
+})
+
+test('normalizeStoryboards repairs character ids from exact role tags', () => {
+  const context = {
+    script: '## S1 | 烧烤店 | 夜\n苏小小在炉前颠锅。',
+    characters: [
+      { id: 18, name: '苏小小' },
+      { id: 19, name: '苏大强' },
+    ],
+    scenes: [{ id: 29, location: '烧烤店', time: '夜' }],
+  }
+  const [storyboard] = normalizeStoryboards([
+    {
+      location: '烧烤店',
+      scene_id: 29,
+      character_ids: [19],
+      video_prompt: '<role>苏小小</role>在炉前颠锅。',
+    },
+  ], context, null)
+
+  assert.deepEqual(storyboard.character_ids, [18])
+})
+
+test('normalizeStoryboards canonicalizes a mismatched dialogue speaker and voice binding from the source script', () => {
+  const context = {
+    script: '## S1 | 厨房 | 夜\n苏小小：（着急）火候到了。\n苏大强：别急。',
+    original_script: '## S1 | 厨房 | 夜\n苏小小：（着急）火候到了。\n苏大强：别急。',
+    characters: [
+      { id: 18, name: '苏小小', role: '女主', voice_style: 'female-shaonv' },
+      { id: 19, name: '苏大强', role: '父亲', voice_style: 'male-qn-badao' },
+    ],
+    scenes: [{ id: 29, location: '厨房', time: '夜' }],
+  }
+  const [storyboard] = normalizeStoryboards([{
+    location: '厨房',
+    scene_id: 29,
+    character_ids: [19],
+    dialogue: '苏大强：火候到了。',
+    video_prompt: '<role>苏小小</role><voice>苏大强</voice>在灶台前说话。',
+  }], context, null)
+
+  assert.equal(storyboard.dialogue, '苏小小：火候到了。')
+  assert.deepEqual(storyboard.character_ids, [18])
+  assert.match(storyboard.video_prompt, /<voice>苏小小<\/voice> \(S1;/)
+  assert.doesNotMatch(storyboard.video_prompt, /<voice>苏大强<\/voice>/)
+})
+
+test('speaker gender inference does not misclassify English descriptions by substring', () => {
+  const context = {
+    script: '## S1 | 厨房 | 夜\n苏小小：开始。',
+    original_script: '## S1 | 厨房 | 夜\n苏小小：开始。',
+    characters: [{ id: 18, name: '苏小小', description: 'the young woman with a clear voice' }],
+    scenes: [{ id: 29, location: '厨房', time: '夜' }],
+  }
+  const [storyboard] = normalizeStoryboards([{
+    location: '厨房',
+    scene_id: 29,
+    character_ids: [18],
+    dialogue: '苏小小：开始。',
+    video_prompt: '<role>苏小小</role><voice>苏小小</voice>开始说话。',
+  }], context, null)
+  assert.match(storyboard.video_prompt, /gender=female/)
+})
+
+test('storyboard completeness treats dialogue as an ordered multiset', () => {
+  const context = {
+    original_script: '## S1 | 厨房 | 夜\n苏小小：先说。\n苏大强：后说。\n苏小小：先说。',
+    characters: [{ id: 18, name: '苏小小' }, { id: 19, name: '苏大强' }],
+    scenes: [{ id: 29, location: '厨房', time: '夜' }],
+  }
+  const result = validateStoryboardCompleteness([
+    { scene_id: 29, dialogue: '苏小小：先说。' },
+    { scene_id: 29, dialogue: '苏小小：先说。' },
+    { scene_id: 29, dialogue: '苏大强：后说。' },
+  ], context, { mode: 'minimax_local_8s' })
+  assert.equal(result.valid, false)
+  assert.match(result.reasons.join('；'), /错序/)
+})
+
+test('normalizeStoryboards recognizes natural Chinese speech markers and narration', () => {
+  const context = {
+    original_script: '## S1 | 厨房 | 夜\n苏小小说：“火候到了。”\n旁白：锅里的油开始冒烟。\n地点：厨房',
+    characters: [{ id: 18, name: '苏小小' }],
+    scenes: [{ id: 29, location: '厨房', time: '夜' }],
+  }
+  const storyboards = normalizeStoryboards([
+    { scene_id: 29, location: '厨房', dialogue: '苏小小：火候到了。' },
+    { scene_id: 29, location: '厨房', dialogue: '旁白：锅里的油开始冒烟。' },
+  ], context, null)
+  assert.equal(storyboards[0].dialogue, '苏小小：火候到了。')
+  assert.equal(storyboards[1].dialogue, '旁白：锅里的油开始冒烟。')
+})
+
+test('normalizeStoryboards supplies varied cinematic fallbacks when model omits shot design', () => {
+  const context = {
+    script: '## S1 | 客厅 | 夜\n人物发生对话',
+    characters: [{ id: 1, name: '甲' }],
+    scenes: [{ id: 29, location: '客厅', time: '夜' }],
+  }
+  const storyboards = normalizeStoryboards([
+    { location: '客厅', scene_id: 29, character_ids: [1] },
+    { location: '客厅', scene_id: 29, character_ids: [1] },
+    { location: '客厅', scene_id: 29, character_ids: [1] },
+    { location: '客厅', scene_id: 29, character_ids: [1] },
+  ], context, null)
+  assert.equal(new Set(storyboards.map(item => item.shot_type)).size, 4)
+  assert.equal(new Set(storyboards.map(item => item.movement)).size, 4)
+  assert.match(storyboards[0].shot_type, /远景|全景/)
+  assert.match(storyboards[3].shot_type, /近景|特写/)
+})
+
+test('requestMijingPlainChat retries ECONNRESET and keeps Eggfans streaming enabled', async () => {
+  const eggfansConfig = {
+    ...config,
+    provider: 'eggfans',
+    baseUrl: 'https://api.eggfans.org',
+    model: 'gpt-5.6-sol',
+  }
+  const requestBodies: any[] = []
+  let attempt = 0
+  const result = await requestMijingPlainChat(eggfansConfig, 'system', 'user', {
+    fetchImpl: async (_url: any, init?: RequestInit) => {
+      requestBodies.push(JSON.parse(String(init?.body || '{}')))
+      attempt += 1
+      if (attempt === 1) throw new Error('read ECONNRESET')
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'recovered' } }] }), { status: 200 })
+    },
+    retryDelaysMs: [0],
+  })
+
+  assert.equal(result, 'recovered')
+  assert.equal(attempt, 2)
+  assert.deepEqual(requestBodies.map(body => body.stream), [true, true])
 })
 
 test('requestMijingPlainChat assembles SSE delta content and does not impose a total request timeout', async () => {

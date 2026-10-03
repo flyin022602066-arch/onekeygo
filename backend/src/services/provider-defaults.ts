@@ -19,6 +19,8 @@ export function getDefaultProviderPriority(
     if (normalizedProvider === 'eggfans') return 99
   }
   if (serviceType === 'video') {
+    if (normalizedProvider === 'comfyui') return 111
+    if (normalizedProvider === 'autodl_comfyui') return 109
     if (normalizedProvider === 'mijing') return 110
     if (normalizedProvider === 'volcengine') return 108
     if (normalizedProvider === 'eggfans') return 98
